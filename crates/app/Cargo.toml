@@ -1,0 +1,21 @@
+[package]
+name = "local-transfer"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "local-transfer"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
+[dependencies]
+transfer-core = { workspace = true }
+gpui-kit = { workspace = true }
+smol = { workspace = true }
+uuid = { workspace = true }
+chrono = "0.4"
+anyhow = { workspace = true }
+tracing = { workspace = true }
+qrcode = "0.14"

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LocalTransfer
+Name[zh_CN]=局域网传输
+Comment=LAN file & text transfer
+Comment[zh_CN]=局域网文件与文本传输
+Exec=local-transfer
+Icon=localtransfer
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=lan;transfer;send;local;

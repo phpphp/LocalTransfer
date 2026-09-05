@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+transfer-core = { path = "crates/core" }
+
+# UI
+gpui-kit = "0.6"
+
+# 网络
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "fs", "macros", "time", "sync"] }
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+socket2 = "0.6"
+if-addrs = "0.15"
+
+# 桥接
+smol = "2"
+
+# 存储/工具
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+[profile.release]
+lto = "thin"
