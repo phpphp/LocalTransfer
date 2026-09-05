@@ -18,7 +18,7 @@ const int prepareTimeoutSecs = 60;
 
 class DeviceInfo {
   final String id;
-  final String name;
+  String name; // 改名立即生效（下一条 announce 带新名）
   final String plat; // windows / mac / linux / android / ios
   int port; // 服务启动后回填（可变）
   final int v;

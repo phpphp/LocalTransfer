@@ -175,7 +175,7 @@ class _HomePageState extends State<HomePage> {
               if (name != null && name.isNotEmpty) {
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setString('device_name', name);
-                // 重启后生效（announce 循环引用的是旧对象，简单起见）
+                app.me.name = name; // 立即生效：下一条 announce 即带新名
                 if (mounted) setState(() {});
               }
             },
@@ -236,13 +236,15 @@ class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
   bool _sending = false;
   String? _status;
+  late final Peer _peer; // 进入会话时的快照（设备超时移除后仍可安全渲染）
 
-  Peer get peer => app.disc.peers[widget.peerId]!;
-  String get peerName => peer.info.name;
+  Peer get peer => _peer;
+  String get peerName => _peer.info.name;
 
   @override
   void initState() {
     super.initState();
+    _peer = app.disc.peers[widget.peerId]!;
     app.disc.addListener(_refresh);
   }
 
