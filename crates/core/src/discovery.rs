@@ -196,6 +196,8 @@ async fn recv_loop(
     shutdown: CancellationToken,
 ) {
     let mut buf = vec![0u8; 2048];
+    // 每对设备的单播回复节流（id → 上次回复时间 ms），防互回风暴
+    let last_replies: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
     loop {
         let (n, src) = tokio::select! {
             r = socket.recv_from(&mut buf) => match r {
@@ -225,6 +227,7 @@ async fn recv_loop(
                 }
                 let info_display = format!("{} @ {src_v4}:{}", info.name, info.port);
                 let now = crate::proto::now_ms();
+                let info_id = info.id.clone();
                 let up = {
                     let mut reg = registry.lock().unwrap();
                     reg.on_announce(info, IpAddr::V4(src_v4), now)
@@ -232,7 +235,24 @@ async fn recv_loop(
                 if up.is_some() {
                     tracing::info!("发现设备: {}", info_display);
                     let _ = event_tx.try_send(CoreEvent::DeviceUp(up.unwrap()));
-                    // 单播回自己的 announce，让对方立刻也发现我
+                }
+                // 对每个有效 announce 都单播回自己的身份（每对设备 2s 节流）。
+                // 之前只在"新增/变更"时回一次：那一个 UDP 包丢了（WiFi 常见），
+                // 且对端（尤其 Android）收不到周期多播——MulticastLock 未持有时
+                // WiFi 芯片直接丢弃多播/广播帧——就会出现"对端看不到我"的单向发现。
+                // 节流同时防止 A/B 互回形成乒乓风暴。
+                let should_reply = {
+                    let mut last = last_replies.lock().unwrap();
+                    let due = last
+                        .get(&info_id)
+                        .map(|t| now.saturating_sub(*t) >= 2000)
+                        .unwrap_or(true);
+                    if due {
+                        last.insert(info_id, now);
+                    }
+                    due
+                };
+                if should_reply {
                     let reply =
                         serde_json::to_vec(&DiscoveryPacket::Announce { info: me.clone() })
                             .unwrap_or_default();
