@@ -117,13 +117,7 @@ async fn info(
     {
         let ip = peer_addr.ip();
         let now = crate::proto::now_ms();
-        let revived = {
-            let mut reg = st.registry.lock().unwrap();
-            reg.touch_by_ip(ip, now)
-        };
-        for dev in revived {
-            let _ = st.event_tx.try_send(CoreEvent::DeviceUp(dev));
-        }
+        st.registry.lock().unwrap().touch_by_ip(ip, now);
     }
     Json(st.me.lock().unwrap().clone())
 }
