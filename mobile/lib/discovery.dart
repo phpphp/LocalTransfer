@@ -21,11 +21,15 @@ class Peer {
   DateTime lastSeen;
   /// 手动添加的设备不参与超时清理（发现不通时的直连兜底）
   final bool manual;
+  /// 参与 TCP 保活探测（UDP 发现被网络干扰时，手机→电脑方向
+  /// 的 HTTP 探测仍然畅通，用它维持在线状态）
+  bool tcpKeep;
   Peer({
     required this.info,
     required this.addr,
     required this.lastSeen,
     this.manual = false,
+    this.tcpKeep = true,
   });
   String get httpBase => 'http://${addr.address}:${info.port}';
   bool online(int timeoutSecs) =>
@@ -38,6 +42,7 @@ class Discovery extends ChangeNotifier {
   RawDatagramSocket? _sock;
   Timer? _tick;
   Timer? _prune;
+  Timer? _tcpKeep;
   final _ctrl = StreamController<Peer>.broadcast();
   /// 每次设备上线/信息变化发一条
   Stream<Peer> get onPeerUp => _ctrl.stream;
@@ -87,6 +92,35 @@ class Discovery extends ChangeNotifier {
     _tick = Timer.periodic(const Duration(seconds: 5), (_) => _announce());
     // 离线清理（2s 一查，手动添加的设备除外）
     _prune = Timer.periodic(const Duration(seconds: 2), _pruneOffline);
+    // TCP 保活：每 6s 对已知设备做 /api/info 探测。UDP 发现被路由器
+    // 限流/隔离时（症状：手机收不到电脑任何 UDP），手机→电脑的 HTTP
+    // 方向仍然畅通——用它发现并维持设备在线状态。
+    _tcpKeep = Timer.periodic(const Duration(seconds: 6), (_) => _tcpKeepalive());
+  }
+
+  Future<void> _tcpKeepalive() async {
+    final targets = peers.values.where((p) => p.tcpKeep).toList();
+    for (final p in targets) {
+      try {
+        final r = await http
+            .get(Uri.parse('${p.httpBase}/api/info'))
+            .timeout(const Duration(seconds: 2));
+        if (r.statusCode != 200) continue;
+        final info = DeviceInfo.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+        if (info.id == me.id) continue;
+        final refreshed = peers[info.id];
+        if (refreshed == null) continue;
+        peers[info.id] = Peer(
+          info: info,
+          addr: InternetAddress(p.addr.address),
+          lastSeen: DateTime.now(),
+          manual: refreshed.manual,
+        );
+        notifyListeners();
+      } catch (_) {
+        // 探测失败：不刷新 lastSeen，交给超时清理判离线
+      }
+    }
   }
 
   /// 手动添加设备（发现不通时直连兜底）：探测 /api/info 成则入表
@@ -167,6 +201,7 @@ class Discovery extends ChangeNotifier {
   Future<void> shutdown() async {
     _tick?.cancel();
     _prune?.cancel();
+    _tcpKeep?.cancel();
     try {
       final data = utf8.encode(jsonEncode({'t': 'bye', 'id': me.id}));
       _sock?.send(data, InternetAddress(discoveryGroup), discoveryPort);
