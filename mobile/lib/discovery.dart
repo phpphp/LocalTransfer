@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import 'proto.dart';
 
@@ -37,6 +38,15 @@ class Discovery extends ChangeNotifier {
   Discovery(this.me);
 
   Future<void> start() async {
+    // Android：WiFi 驱动默认丢弃多播/广播帧，必须持 MulticastLock
+    //（平台通道在 MainActivity.kt 实现；其他平台静默跳过）
+    try {
+      await const MethodChannel('localtransfer/multicast').invokeMethod('acquire');
+    } on PlatformException {
+      // 非 Android 平台无此通道
+    } on MissingPluginException {
+      // 桌面/测试环境
+    }
     final sock = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4, discoveryPort,
         reuseAddress: true, reusePort: false);
@@ -118,5 +128,8 @@ class Discovery extends ChangeNotifier {
     } catch (_) {}
     _sock?.close(); // dart:io 的 close 是同步 void
     _sock = null;
+    try {
+      await const MethodChannel('localtransfer/multicast').invokeMethod('release');
+    } catch (_) {}
   }
 }
