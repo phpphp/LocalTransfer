@@ -64,7 +64,10 @@ class TransferApi {
         )
         .timeout(const Duration(seconds: prepareTimeoutSecs + 5));
     if (pr.statusCode == 403) {
-      throw pr.body.contains('拒绝') ? '对方拒绝了传输' : '传输被拒绝';
+      if (pr.body.contains('超时')) {
+        throw '等待确认超时：请在 60 秒内在电脑端点「接收」';
+      }
+      throw '对方拒绝了传输';
     }
     if (pr.statusCode != 200) {
       throw '对方返回 ${pr.statusCode}：${pr.body}';

@@ -11,6 +11,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'proto.dart';
 
@@ -123,7 +124,8 @@ class Discovery extends ChangeNotifier {
     }
   }
 
-  /// 手动添加设备（发现不通时直连兜底）：探测 /api/info 成则入表
+  /// 手动添加设备（发现不通时直连兜底）：探测 /api/info 成则入表。
+  /// 同时持久化——下次启动自动恢复（TCP 保活维持在线），只需添加一次。
   Future<String?> addManual(String hostPort) {
     return Future(() async {
       var hp = hostPort.trim();
@@ -148,8 +150,45 @@ class Discovery extends ChangeNotifier {
         manual: true,
       );
       notifyListeners();
+      await _persistManual();
       return null; // 成功
     });
+  }
+
+  /// 手动设备持久化（SharedPreferences）：id|ip|port 列表
+  Future<void> _persistManual() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = peers.values
+          .where((p) => p.manual)
+          .map((p) => '${p.info.id}|${p.addr.address}|${p.info.port}')
+          .toList();
+      await prefs.setStringList('manual_peers', list);
+    } catch (_) {}
+  }
+
+  /// 启动时恢复手动设备（先入表，TCP 保活会立即开始探测刷新信息）
+  Future<void> restoreManual() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList('manual_peers') ?? [];
+      for (final entry in list) {
+        final parts = entry.split('|');
+        if (parts.length != 3) continue;
+        peers[parts[0]] = Peer(
+          info: DeviceInfo(
+            id: parts[0],
+            name: parts[0].substring(0, 8),
+            plat: 'unknown',
+            port: int.tryParse(parts[2]) ?? defaultHttpPort,
+          ),
+          addr: InternetAddress(parts[1]),
+          lastSeen: DateTime.now(),
+          manual: true,
+        );
+      }
+      if (list.isNotEmpty) notifyListeners();
+    } catch (_) {}
   }
 
   void _onPacket(String raw, InternetAddress from) {

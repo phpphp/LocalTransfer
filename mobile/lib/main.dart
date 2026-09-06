@@ -79,6 +79,7 @@ class AppState {
     final port = await server.start();
     me.port = port; // announce 循环从这之后才开始，端口已就绪
     disc = Discovery(me);
+    await disc.restoreManual(); // 恢复手动添加过的设备（TCP 保活立即接管）
     await disc.start();
     ready = true;
   }
