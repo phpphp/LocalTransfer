@@ -179,6 +179,19 @@ impl RootView {
                                 })),
                         ),
                     )
+                    // 本机二维码（图标用网格占位语义；点击本机卡片同效）
+                    .child(
+                        Button::new("btn-qr")
+                            .outline()
+                            .small()
+                            .flex_none()
+                            .icon(IconName::LayoutDashboard)
+                            .tooltip("本机二维码（手机扫码添加 / 网页客户端）")
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.show_web_qr = true;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Button::new("btn-settings")
                             .outline()
