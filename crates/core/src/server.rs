@@ -106,7 +106,25 @@ fn err(status: StatusCode, msg: &str) -> Response {
 // GET /api/info
 // ---------------------------------------------------------------------------
 
-async fn info(State(st): State<Arc<ServerState>>) -> Json<DeviceInfo> {
+async fn info(
+    State(st): State<Arc<ServerState>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+) -> Json<DeviceInfo> {
+    // 任何设备对本服务的主动 HTTP 访问都证明它活着：按源 IP 刷新
+    // 注册表 last_seen。UDP 多播被路由器限流/隔离时（手机端症状：
+    // 电脑列表里手机反复上线/消失），手机每 6s 的 TCP 保活探测
+    // 由此维持双向在线状态。
+    {
+        let ip = peer_addr.ip();
+        let now = crate::proto::now_ms();
+        let revived = {
+            let mut reg = st.registry.lock().unwrap();
+            reg.touch_by_ip(ip, now)
+        };
+        for dev in revived {
+            let _ = st.event_tx.try_send(CoreEvent::DeviceUp(dev));
+        }
+    }
     Json(st.me.lock().unwrap().clone())
 }
 

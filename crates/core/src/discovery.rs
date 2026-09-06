@@ -82,6 +82,22 @@ impl Registry {
         self.devices.get(id)
     }
 
+    /// 按源 IP 刷新在线状态（对端的 HTTP 访问证明其存活；
+    /// 返回被刷新的设备，供 UI 更新离线→在线的翻转）
+    pub(crate) fn touch_by_ip(&mut self, ip: IpAddr, now_ms: i64) -> Vec<Device> {
+        let mut revived = Vec::new();
+        for d in self.devices.values_mut() {
+            if d.addr == ip {
+                d.last_seen_ms = now_ms;
+                if !d.online {
+                    d.online = true;
+                    revived.push(d.clone());
+                }
+            }
+        }
+        revived
+    }
+
     pub fn list(&self) -> Vec<Device> {
         let mut v: Vec<Device> = self.devices.values().cloned().collect();
         v.sort_by(|a, b| b.last_seen_ms.cmp(&a.last_seen_ms));
