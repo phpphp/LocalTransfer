@@ -30,6 +30,10 @@ pub struct Registry {
 impl Registry {
     /// 处理一条 announce；返回设备表示"新增/信息变更/复活"，需要通知 UI
     pub(crate) fn on_announce(&mut self, info: DeviceInfo, addr: IpAddr, now_ms: i64) -> Option<Device> {
+        // 同 IP 上的旧 id 幽灵（重装后的残留）：新设备认领了这个 IP，
+        // 旧条目不可能再回来了，直接清掉
+        self.devices
+            .retain(|_, d| d.info.id == info.id || d.addr != addr || d.online);
         match self.devices.get_mut(&info.id) {
             Some(existing) => {
                 let changed = existing.info != info || !existing.online;
@@ -75,6 +79,17 @@ impl Registry {
                 downs.push((d.info.id.clone(), d.info.name.clone()));
             }
         }
+        // 离线超过 2 分钟的条目整个移除（含重装后的旧 id 幽灵），
+        // 防止注册表无限膨胀、被同 IP 流量误复活
+        let dead: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|(_, d)| !d.online && now_ms - d.last_seen_ms > 120_000)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in dead {
+            self.devices.remove(&id);
+        }
         downs
     }
 
@@ -82,20 +97,16 @@ impl Registry {
         self.devices.get(id)
     }
 
-    /// 按源 IP 刷新在线状态（对端的 HTTP 访问证明其存活；
-    /// 返回被刷新的设备，供 UI 更新离线→在线的翻转）
-    pub(crate) fn touch_by_ip(&mut self, ip: IpAddr, now_ms: i64) -> Vec<Device> {
-        let mut revived = Vec::new();
+    /// 按源 IP 刷新在线状态（对端的 HTTP 访问证明其存活）。
+    /// 只刷新**在线**条目、不复活离线条目：设备重新上线只认它自己的
+    /// announce。否则同一 IP 上"旧安装的幽灵设备"会被新设备的 HTTP
+    /// 流量反复续命（表现为同一台手机在多个 IP 上同时在线）。
+    pub(crate) fn touch_by_ip(&mut self, ip: IpAddr, now_ms: i64) {
         for d in self.devices.values_mut() {
-            if d.addr == ip {
+            if d.addr == ip && d.online {
                 d.last_seen_ms = now_ms;
-                if !d.online {
-                    d.online = true;
-                    revived.push(d.clone());
-                }
             }
         }
-        revived
     }
 
     pub fn list(&self) -> Vec<Device> {
