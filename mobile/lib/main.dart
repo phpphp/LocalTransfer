@@ -52,6 +52,7 @@ class AppState extends ChangeNotifier {
   final Map<String, RecvProgress> recvProgress = {}; // token → 进度
   DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
   bool ready = false;
+  bool _initStarted = false;
 
   void _notifyThrottled() {
     final now = DateTime.now();
@@ -61,6 +62,10 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> init() async {
+    // 幂等：Activity 重建会再次触发 initState → init，
+    // 重复跑会起第二套服务（端口+1）和第二个发现循环
+    if (_initStarted) return;
+    _initStarted = true;
     final prefs = await SharedPreferences.getInstance();
     var id = prefs.getString('device_id');
     if (id == null) {
