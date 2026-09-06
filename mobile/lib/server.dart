@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
@@ -22,12 +23,21 @@ class IncomingReq {
   IncomingReq(this.reqId, this.peer, this.files, this.decision);
 }
 
+/// 一个已完成文件的信息（转存公共下载目录后）
+class DoneFile {
+  final String relPath;
+  final int size;
+  final String? publicPath; // Download/LocalTransfer/... 下的真实路径（失败为 null）
+  DoneFile(this.relPath, this.size, this.publicPath);
+}
+
 class RecvSession {
   final String token;
   final DeviceInfo peer;
   final List<FileMeta> files;
   final String saveDir;
   int completed = 0;
+  final List<DoneFile> doneFiles = [];
   RecvSession(this.token, this.peer, this.files, this.saveDir);
 }
 
@@ -35,8 +45,9 @@ class AppServer {
   final DeviceInfo me;
   final void Function(ChatMsg msg, String peerId) onMessage;
   final void Function(IncomingReq req) onIncoming;
-  final void Function(String peerId, String peerName, String fileName, int total,
-      int transferred, bool done, String path) onProgress;
+  /// 整批传输完成（一次 prepare 会话的所有文件）→ 合并为一张卡片
+  final void Function(String peerId, DeviceInfo peer, List<DoneFile> files,
+      String saveDir) onBatchDone;
   HttpServer? _srv;
   final Map<String, RecvSession> _sessions = {};
 
@@ -44,7 +55,7 @@ class AppServer {
     required this.me,
     required this.onMessage,
     required this.onIncoming,
-    required this.onProgress,
+    required this.onBatchDone,
   });
 
   int get port => _srv?.port ?? 0;
@@ -122,6 +133,7 @@ class AppServer {
     final segs = meta.relPath
         .split('/')
         .where((s) => s.isNotEmpty && s != '.' && s != '..' && !s.contains(':'));
+    final relClean = segs.join('/');
     final path = segs.isEmpty
         ? '${sess.saveDir}${Platform.pathSeparator}${meta.name}'
         : '${sess.saveDir}${Platform.pathSeparator}${segs.join(Platform.pathSeparator)}';
@@ -131,12 +143,32 @@ class AppServer {
     final bytes = await r.read().expand((c) => c).toList();
     await f.writeAsBytes(bytes, flush: true);
     sess.completed++;
-    onProgress(sess.peer.id, sess.peer.name, meta.name, meta.size, bytes.length,
-        true, path);
+    // 转存公共下载目录（Download/LocalTransfer/...），文件管理器可见
+    final publicPath = await _publishToDownloads(path, relClean);
+    sess.doneFiles.add(DoneFile(
+      relClean.isEmpty ? meta.name : relClean,
+      bytes.length,
+      publicPath,
+    ));
     if (sess.completed >= sess.files.length) {
       _sessions.remove(token);
+      // 整批完成 → 合并为一张卡片（文件夹名 / "N 个文件"）
+      onBatchDone(sess.peer.id, sess.peer, sess.doneFiles, sess.saveDir);
     }
     return Response.ok('');
+  }
+
+  /// 复制进公共下载目录（Android 平台通道 MediaStore；其他平台返回 null）
+  Future<String?> _publishToDownloads(String srcPath, String relPath) async {
+    try {
+      final r = await const MethodChannel('localtransfer/downloads')
+          .invokeMethod<String?>('save', {'path': srcPath, 'rel': relPath});
+      return (r == null || r.isEmpty) ? null : r;
+    } on PlatformException {
+      return null; // 非 Android / 失败：文件留在应用目录，仍可打开
+    } on MissingPluginException {
+      return null;
+    }
   }
 
   Future<Response> _handleCancel(Request r, String token) async {
@@ -145,7 +177,8 @@ class AppServer {
   }
 
   Future<String> _saveDir() async {
-    // Android：外部专项目录（无需权限，文件管理器可见）；iOS：文档目录
+    // 临时落盘目录（随后转存公共下载目录）；
+    // 优先应用外部目录（无需权限、容量大）
     final base = await getApplicationDocumentsDirectory();
     final dir = Directory('${base.parent.path}${Platform.pathSeparator}LocalTransfer');
     await dir.create(recursive: true);

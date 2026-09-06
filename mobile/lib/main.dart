@@ -71,10 +71,13 @@ class AppState {
       me: me,
       onMessage: (msg, peerId) => chats.putIfAbsent(peerId, () => []).add(msg),
       onIncoming: (req) => _pendingIncoming.add(req),
-      onProgress: (peerId, peerName, fileName, total, transferred, done, path) {
+      // 整批（一次会话）完成 → 合并为一张卡片：文件夹名或"N 个文件"
+      onBatchDone: (peerId, peer, files, saveDir) {
+        final folder = _folderName(files);
+        final path = _folderPath(files, saveDir);
         chats.putIfAbsent(peerId, () => []).add(ChatMsg(
-            fileName: fileName,
-            fileSize: total,
+            fileName: folder,
+            fileSize: files.fold<int>(0, (s, f) => s + f.size),
             outgoing: false,
             atMs: DateTime.now().millisecondsSinceEpoch,
             path: path));
@@ -91,6 +94,39 @@ class AppState {
 
 /// 全局单例（简单起见）
 final app = AppState();
+
+/// 批次卡片的显示名：全部文件在同一文件夹下 → 文件夹名；否则"N 个文件"
+String _folderName(List<DoneFile> files) {
+  if (files.length == 1) {
+    final rel = files[0].relPath;
+    final i = rel.indexOf('/');
+    return i > 0 ? rel.substring(0, i) : rel;
+  }
+  String? folder;
+  for (final f in files) {
+    final i = f.relPath.indexOf('/');
+    if (i <= 0) return '${files.length} 个文件'; // 散文件混入
+    final first = f.relPath.substring(0, i);
+    if (folder == null) {
+      folder = first;
+    } else if (folder != first) {
+      return '${files.length} 个文件';
+    }
+  }
+  return folder ?? '${files.length} 个文件';
+}
+
+/// 批次卡片点击打开的路径：文件夹 → 公共下载目录下的文件夹根
+String _folderPath(List<DoneFile> files, String saveDir) {
+  for (final f in files) {
+    final p = f.publicPath;
+    if (p != null && p.contains('/')) {
+      final i = p.lastIndexOf('/');
+      return p.substring(0, i); // 同一文件夹下的文件 → 去掉文件名即文件夹
+    }
+  }
+  return saveDir;
+}
 
 /// 待确认的接收请求流（UI 弹卡片确认）
 final _pendingIncoming = StreamController<IncomingReq>.broadcast();
@@ -190,7 +226,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// 本机二维码（其他设备扫码添加本机）
   Future<void> _showMyQr() async {
-    final ip = await _myLanIp();
+    final ip = await Discovery.myLanIp();
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -216,29 +252,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ],
       ),
     );
-  }
-
-  /// 本机局域网 IPv4（优先私网地址）
-  static Future<String> _myLanIp() async {
-    try {
-      final ifaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
-      for (final i in ifaces) {
-        for (final a in i.addresses) {
-          if (a.isLoopback) continue;
-          if (a.address.startsWith('192.168.') ||
-              a.address.startsWith('10.') ||
-              a.address.startsWith('172.')) {
-            return a.address;
-          }
-        }
-      }
-      for (final i in ifaces) {
-        for (final a in i.addresses) {
-          if (!a.isLoopback) return a.address;
-        }
-      }
-    } catch (_) {}
-    return '127.0.0.1';
   }
 
   void _showIncoming(IncomingReq req) {

@@ -44,6 +44,7 @@ class Discovery extends ChangeNotifier {
   Timer? _tick;
   Timer? _prune;
   Timer? _tcpKeep;
+  Timer? _scan;
   final _ctrl = StreamController<Peer>.broadcast();
   /// 每次设备上线/信息变化发一条
   Stream<Peer> get onPeerUp => _ctrl.stream;
@@ -97,31 +98,88 @@ class Discovery extends ChangeNotifier {
     // 限流/隔离时（症状：手机收不到电脑任何 UDP），手机→电脑的 HTTP
     // 方向仍然畅通——用它发现并维持设备在线状态。
     _tcpKeep = Timer.periodic(const Duration(seconds: 6), (_) => _tcpKeepalive());
+    // TCP 网段扫描：启动即扫一次 + 每 45s 复扫（真自动发现兜底）
+    subnetScan();
+    _scan = Timer.periodic(const Duration(seconds: 45), (_) => subnetScan());
   }
 
   Future<void> _tcpKeepalive() async {
     final targets = peers.values.where((p) => p.tcpKeep).toList();
     for (final p in targets) {
-      try {
-        final r = await http
-            .get(Uri.parse('${p.httpBase}/api/info'))
-            .timeout(const Duration(seconds: 2));
-        if (r.statusCode != 200) continue;
-        final info = DeviceInfo.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
-        if (info.id == me.id) continue;
-        final refreshed = peers[info.id];
-        if (refreshed == null) continue;
-        peers[info.id] = Peer(
-          info: info,
-          addr: InternetAddress(p.addr.address),
-          lastSeen: DateTime.now(),
-          manual: refreshed.manual,
-        );
-        notifyListeners();
-      } catch (_) {
-        // 探测失败：不刷新 lastSeen，交给超时清理判离线
+      await _probeHttp(p.addr.address, p.info.port, addNew: false);
+    }
+  }
+
+  /// HTTP 探测一个地址；addNew=true 时未知设备也入表（发现），否则只刷新
+  Future<bool> _probeHttp(String ip, int port, {bool addNew = false}) async {
+    try {
+      final r = await http
+          .get(Uri.parse('http://$ip:$port/api/info'))
+          .timeout(const Duration(seconds: 2));
+      if (r.statusCode != 200) return false;
+      final info = DeviceInfo.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+      if (info.id == me.id) return false;
+      final existed = peers[info.id];
+      if (existed == null && !addNew) return false;
+      peers[info.id] = Peer(
+        info: info,
+        addr: InternetAddress(ip),
+        lastSeen: DateTime.now(),
+        manual: existed?.manual ?? false,
+      );
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// TCP 网段扫描（UDP 被路由器限流/隔离时的真自动发现）：
+  /// 对本机所在 /24 网段探测常见端口的 /api/info，64 并发。
+  Future<int> subnetScan() async {
+    final own = await myLanIp();
+    final dot = own.lastIndexOf('.');
+    if (dot < 0) return 0;
+    final prefix = own.substring(0, dot);
+    var found = 0;
+    const ports = [defaultHttpPort, defaultHttpPort + 1];
+    final futures = <Future<void>>[];
+    for (var i = 1; i <= 254; i++) {
+      for (final port in ports) {
+        futures.add(() async {
+          if (await _probeHttp('$prefix.$i', port, addNew: true)) found++;
+        }());
+      }
+      if (futures.length >= 64) {
+        await Future.wait(futures);
+        futures.clear();
       }
     }
+    await Future.wait(futures);
+    return found;
+  }
+
+  /// 本机局域网 IPv4（优先私网地址）
+  static Future<String> myLanIp() async {
+    try {
+      final ifaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      for (final i in ifaces) {
+        for (final a in i.addresses) {
+          if (a.isLoopback) continue;
+          if (a.address.startsWith('192.168.') ||
+              a.address.startsWith('10.') ||
+              a.address.startsWith('172.')) {
+            return a.address;
+          }
+        }
+      }
+      for (final i in ifaces) {
+        for (final a in i.addresses) {
+          if (!a.isLoopback) return a.address;
+        }
+      }
+    } catch (_) {}
+    return '127.0.0.1';
   }
 
   /// 手动添加设备（发现不通时直连兜底）：探测 /api/info 成则入表。
@@ -246,6 +304,7 @@ class Discovery extends ChangeNotifier {
     _tick?.cancel();
     _prune?.cancel();
     _tcpKeep?.cancel();
+    _scan?.cancel();
     try {
       final data = utf8.encode(jsonEncode({'t': 'bye', 'id': me.id}));
       _sock?.send(data, InternetAddress(discoveryGroup), discoveryPort);
