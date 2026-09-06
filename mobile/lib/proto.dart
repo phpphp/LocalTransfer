@@ -87,6 +87,16 @@ class FileMeta {
   return ('', null);
 }
 
+/// 接收批次里的一个文件（打开用）
+class FileEntry {
+  final String name; // 显示名（rel 尾段）
+  final String relPath;
+  final int size;
+  final String? uri; // MediaStore 内容 URI
+  final String? publicPath; // 真实路径（回退用）
+  FileEntry(this.name, this.relPath, this.size, this.uri, this.publicPath);
+}
+
 class ChatMsg {
   final String text; // 文本内容
   final String fileName; // 文件消息的名字（空 = 文本）
@@ -95,6 +105,7 @@ class ChatMsg {
   final int atMs;
   final String? path; // 打开目标（uri:…/path:…/folder:… 约定，见 main.dart）
   final String? location; // 保存位置（人类可读，卡片展示）
+  final List<FileEntry>? files; // 批次文件清单（应用内浏览/逐个打开）
   ChatMsg({
     this.text = '',
     this.fileName = '',
@@ -103,6 +114,7 @@ class ChatMsg {
     required this.atMs,
     this.path,
     this.location,
+    this.files,
   });
   bool get isFile => fileName.isNotEmpty;
 }

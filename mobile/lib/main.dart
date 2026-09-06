@@ -92,15 +92,26 @@ class AppState extends ChangeNotifier {
       // 整批（一次会话）完成 → 合并为一张卡片：文件夹名或"N 个文件"
       onBatchDone: (peerId, peer, files, saveDir) {
         final folder = _folderName(files);
-        final target = _openTarget(files);
         final location = _location(files);
+        final entries = files
+            .map((f) => FileEntry(
+                  f.relPath.contains('/')
+                      ? f.relPath.substring(f.relPath.indexOf('/') + 1)
+                      : f.relPath,
+                  f.relPath,
+                  f.size,
+                  f.uri,
+                  f.publicPath,
+                ))
+            .toList();
         chats.putIfAbsent(peerId, () => []).add(ChatMsg(
             fileName: folder,
             fileSize: files.fold<int>(0, (s, f) => s + f.size),
             outgoing: false,
             atMs: DateTime.now().millisecondsSinceEpoch,
-            path: target,
-            location: location));
+            path: files.length == 1 ? _openTarget(files) : null,
+            location: location,
+            files: entries));
       },
     );
     final port = await server.start();
@@ -136,43 +147,37 @@ String _folderName(List<DoneFile> files) {
   return folder ?? '${files.length} 个文件';
 }
 
-/// 卡片点击的打开目标（约定前缀 uri:/path:/folder:）：
-/// 单文件：uri:URI|relPath|publicPath（URI 打开失败回退真实路径）
-/// 多文件：folder:RelPath（文件管理器定位；失败回退下载列表）
+/// 单文件卡片的打开目标（uri:URI|relPath|publicPath / path:…）
 String _openTarget(List<DoneFile> files) {
-  if (files.length == 1) {
-    final f = files[0];
-    if (f.uri != null) {
-      return 'uri:${f.uri}|${f.relPath}|${f.publicPath ?? ''}';
-    }
-    if (f.publicPath != null) return 'path:${f.publicPath}';
-    return 'folder:LocalTransfer';
+  final f = files[0];
+  if (f.uri != null) {
+    return 'uri:${f.uri}|${f.relPath}|${f.publicPath ?? ''}';
   }
-  String? folder;
-  for (final f in files) {
-    final i = f.relPath.indexOf('/');
-    if (i <= 0) return 'folder:LocalTransfer';
-    final first = f.relPath.substring(0, i);
-    if (folder == null) {
-      folder = first;
-    } else if (folder != first) {
-      return 'folder:LocalTransfer';
-    }
-  }
-  return 'folder:LocalTransfer/$folder';
+  if (f.publicPath != null) return 'path:${f.publicPath}';
+  return '';
 }
 
 /// 卡片上显示的保存位置（人类可读）
 String _location(List<DoneFile> files) {
-  final target = _openTarget(files);
-  if (target.startsWith('uri:')) {
-    final rel = target.split('|').last;
-    return 'Download/LocalTransfer/$rel';
+  if (files.length == 1) {
+    final t = _openTarget(files);
+    if (t.startsWith('uri:') || t.startsWith('path:')) {
+      return 'Download/LocalTransfer/${files[0].relPath}';
+    }
+    return 'Download/LocalTransfer';
   }
-  if (target.startsWith('folder:')) {
-    return 'Download/${target.substring(7)}';
+  String? folder;
+  for (final f in files) {
+    final i = f.relPath.indexOf('/');
+    if (i <= 0) return 'Download/LocalTransfer';
+    final first = f.relPath.substring(0, i);
+    if (folder == null) {
+      folder = first;
+    } else if (folder != first) {
+      return 'Download/LocalTransfer';
+    }
   }
-  return 'Download/LocalTransfer';
+  return 'Download/LocalTransfer/$folder';
 }
 
 /// 待确认的接收请求流（UI 弹卡片确认）
@@ -552,39 +557,34 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  /// 打开接收到的文件/文件夹：
-  /// 单文件 → 内容 URI（失败回退真实路径）；文件夹 → 文件管理器定位（失败回退下载列表）
-  Future<void> _openFile(ChatMsg m) async {
-    final t = m.path;
-    if (t == null) return;
+  /// 打开文件条目：内容 URI 优先，失败回退真实路径。
+  /// 注意：不再调用 openFolder（部分设备的文件管理器收到目录 Intent 会崩溃）；
+  /// 文件夹卡片改为应用内弹文件清单（_showFolderSheet）。
+  Future<void> _openEntry(FileEntry f) async {
     const ch = MethodChannel('localtransfer/downloads');
     try {
-      if (t.startsWith('uri:')) {
-        final parts = t.substring(4).split('|');
-        final ext = parts.length > 1
-            ? parts[1].split('.').lastOrNull?.toLowerCase()
-            : null;
+      if (f.uri != null) {
+        final ext = f.relPath.split('.').lastOrNull?.toLowerCase();
         try {
           await ch.invokeMethod(
-              'openUri', {'uri': parts[0], 'mime': _mimeOf(ext)});
+              'openUri', {'uri': f.uri, 'mime': _mimeOf(ext)});
           return;
         } on PlatformException {
-          // 回退：真实路径打开
-          final p = parts.length > 2 ? parts[2] : '';
-          if (p.isNotEmpty) {
-            final r = await OpenFilex.open(p);
-            if (r.type == ResultType.done) return;
-          }
-          rethrow;
+          // 回退：真实路径
         }
-      } else if (t.startsWith('folder:')) {
-        await ch.invokeMethod('openFolder', {'rel': t.substring(7)});
-      } else if (t.startsWith('path:')) {
-        final r = await OpenFilex.open(t.substring(5));
-        if (r.type != ResultType.done && mounted) {
+      }
+      if (f.publicPath != null) {
+        final r = await OpenFilex.open(f.publicPath!);
+        if (r.type == ResultType.done) return;
+        if (mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(SnackBar(content: Text('打开失败：${r.message}')));
         }
+        return;
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('打开失败：文件已被移动或删除')));
       }
     } on PlatformException catch (e) {
       if (mounted) {
@@ -592,6 +592,61 @@ class _ChatPageState extends State<ChatPage> {
             SnackBar(content: Text('打开失败：${e.message ?? '无可用应用'}')));
       }
     }
+  }
+
+  /// 文件夹卡片 → 应用内文件清单（逐个点击打开，不拉起文件管理器）
+  void _showFolderSheet(ChatMsg m) {
+    final files = m.files ?? const <FileEntry>[];
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    const Icon(Icons.folder, size: 20),
+                    const SizedBox(width: 6),
+                    Expanded(
+                        child: Text(m.fileName,
+                            style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600))),
+                  ]),
+                  const SizedBox(height: 2),
+                  Text('${m.location ?? ''} · ${files.length} 个文件',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: files.length,
+                itemBuilder: (ctx, i) {
+                  final f = files[i];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.insert_drive_file, size: 20),
+                    title: Text(f.name,
+                        overflow: TextOverflow.ellipsis, maxLines: 1),
+                    trailing: Text(fmtSize(f.size),
+                        style:
+                            const TextStyle(fontSize: 12, color: Colors.grey)),
+                    onTap: () => _openEntry(f),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   static String _mimeOf(String? ext) {
@@ -618,6 +673,69 @@ class _ChatPageState extends State<ChatPage> {
       default:
         return 'application/octet-stream';
     }
+  }
+
+  /// 进行中的接收 → 消息流尾部的进度卡片（完成后由文件夹卡片接替）
+  Widget _progressCard(RecvProgress p) {
+    final frac = p.total > 0 ? p.transferred / p.total : 0.0;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.all(12),
+        constraints: const BoxConstraints(maxWidth: 300),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(children: [
+              const Icon(Icons.folder, size: 18),
+              const SizedBox(width: 6),
+              Flexible(
+                  child: Text(p.label,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13))),
+              const SizedBox(width: 6),
+              Text('（${p.fileIdx + 1}/${p.fileCount}）',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            ]),
+            const SizedBox(height: 6),
+            Text(
+                '接收中 ${(frac * 100).toStringAsFixed(0)}% · '
+                '${fmtSize(p.transferred)} / ${fmtSize(p.total)}',
+                style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            const SizedBox(height: 6),
+            LinearProgressIndicator(value: frac.clamp(0.0, 1.0)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 卡片点击：单文件直开；文件夹/多文件 → 应用内清单
+  Future<void> _openFile(ChatMsg m) async {
+    final files = m.files;
+    if (files != null && files.length == 1) {
+      await _openEntry(files[0]);
+      return;
+    }
+    if (m.path != null && m.path!.isNotEmpty) {
+      // 单文件旧编码兼容（path:…）
+      final t = m.path!;
+      if (t.startsWith('path:')) {
+        final r = await OpenFilex.open(t.substring(5));
+        if (r.type != ResultType.done && mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('打开失败：${r.message}')));
+        }
+      }
+      return;
+    }
+    _showFolderSheet(m);
   }
 
   Future<void> _pickAndSend() async {
@@ -681,39 +799,6 @@ class _ChatPageState extends State<ChatPage> {
       ),
       body: Column(
         children: [
-          // 接收进度条（进行中的接收会话）
-          ListenableBuilder(
-            listenable: app,
-            builder: (context, _) {
-              final rp = app.recvProgress.values
-                  .where((p) => p.peerId == widget.peerId)
-                  .toList();
-              if (rp.isEmpty) return const SizedBox.shrink();
-              final p = rp.first;
-              final frac = p.total > 0 ? p.transferred / p.total : 0.0;
-              return Container(
-                width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                color: Theme.of(context)
-                    .colorScheme
-                    .surfaceContainerHighest
-                    .withValues(alpha: 0.5),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '接收 ${p.label}（${p.fileIdx + 1}/${p.fileCount}）'
-                      ' · ${(frac * 100).toStringAsFixed(0)}%',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    const SizedBox(height: 4),
-                    LinearProgressIndicator(value: frac.clamp(0.0, 1.0)),
-                  ],
-                ),
-              );
-            },
-          ),
           if (_status != null)
             Container(
               width: double.infinity,
@@ -722,15 +807,27 @@ class _ChatPageState extends State<ChatPage> {
               child: Text(_status!, style: const TextStyle(fontSize: 12)),
             ),
           Expanded(
-            child: msgs.isEmpty
-                ? const Center(
-                    child: Text('发送文本，或点 📎 选择文件',
-                        style: TextStyle(color: Colors.grey)))
-                : ListView.builder(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: msgs.length,
-                    itemBuilder: (context, i) {
-                      final m = msgs[i];
+            // 消息流 + 进行中的接收（进度卡片渲染在列表尾部，实时刷新）
+            child: ListenableBuilder(
+              listenable: app,
+              builder: (context, _) {
+                final active = app.recvProgress.values
+                    .where((p) => p.peerId == widget.peerId)
+                    .toList();
+                final total = msgs.length + active.length;
+                if (total == 0) {
+                  return const Center(
+                      child: Text('发送文本，或点 📎 选择文件',
+                          style: TextStyle(color: Colors.grey)));
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: total,
+                  itemBuilder: (context, i) {
+                    if (i >= msgs.length) {
+                      return _progressCard(active[i - msgs.length]);
+                    }
+                    final m = msgs[i];
                       return Align(
                         alignment: m.outgoing
                             ? Alignment.centerRight
@@ -773,7 +870,7 @@ class _ChatPageState extends State<ChatPage> {
                                                     fontSize: 10,
                                                     color: Colors.grey)),
                                           Text(
-                                              m.path != null
+                                              m.path != null || m.files != null
                                                   ? '${fmtSize(m.fileSize)} · 点击打开'
                                                   : fmtSize(m.fileSize),
                                               style:
@@ -794,8 +891,10 @@ class _ChatPageState extends State<ChatPage> {
                                 ),
                         ),
                       );
-                    },
-                  ),
+                  },
+                );
+              },
+            ),
           ),
           SafeArea(
             child: Padding(
