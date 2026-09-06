@@ -8,6 +8,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import 'proto.dart';
 
 /// 注册表里的一台设备
@@ -21,7 +23,7 @@ class Peer {
       DateTime.now().difference(lastSeen).inSeconds < timeoutSecs;
 }
 
-class Discovery extends ChangeNotifierSdk {
+class Discovery extends ChangeNotifier {
   final DeviceInfo me;
   final Map<String, Peer> peers = {};
   RawDatagramSocket? _sock;
@@ -39,12 +41,12 @@ class Discovery extends ChangeNotifierSdk {
         InternetAddress.anyIPv4, discoveryPort,
         reuseAddress: true, reusePort: false);
     try {
-      await sock.joinMulticastGroup(
-          InternetAddress(discoveryGroup), InternetAddress.anyIPv4);
+      // dart:io 的多播加入是同步方法 joinMulticast
+      sock.joinMulticast(InternetAddress(discoveryGroup));
     } catch (e) {
       // 部分网络/模拟器不允许 join：仍可广播+单播兜底
       // ignore: avoid_print
-      print('joinMulticastGroup 失败（继续广播兜底）: $e');
+      print('joinMulticast 失败（继续广播兜底）: $e');
     }
     sock.multicastLoopback = false;
     _sock = sock;
@@ -114,19 +116,7 @@ class Discovery extends ChangeNotifierSdk {
       _sock?.send(data, InternetAddress(discoveryGroup), discoveryPort);
       _sock?.send(data, InternetAddress('255.255.255.255'), discoveryPort);
     } catch (_) {}
-    await _sock?.close();
+    _sock?.close(); // dart:io 的 close 是同步 void
     _sock = null;
-  }
-}
-
-/// 简易 ChangeNotifier（避免为这一个类引 flutter foundation 依赖到测试里）
-class ChangeNotifierSdk {
-  final List<void Function()> _ls = [];
-  void addListener(void Function() l) => _ls.add(l);
-  void removeListener(void Function() l) => _ls.remove(l);
-  void notifyListeners() {
-    for (final l in List.of(_ls)) {
-      l();
-    }
   }
 }

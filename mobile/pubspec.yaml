@@ -12,7 +12,7 @@ dependencies:
   # HTTP 客户端（与桌面端 axum 服务互通）
   http: ^1.2.0
   # 本机 HTTP 服务（接收桌面端发来的消息/文件）
-  shelf: ^1.6.0
+  shelf: ^1.4.0
   shelf_router: ^1.1.4
   # 文件选择（多选）
   file_picker: ^8.0.0

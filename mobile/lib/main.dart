@@ -277,7 +277,7 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _pickAndSend() async {
-    final picked = await FilePicker.platform.pickFiles(multiple: true);
+    final picked = await FilePicker.platform.pickFiles(allowMultiple: true);
     if (picked == null || picked.files.isEmpty) return;
     final files = <(FileMeta, String)>[];
     for (final f in picked.files) {

@@ -14,32 +14,37 @@ UDP 多播发现（`239.192.71.82:17878`）+ HTTP JSON + 流式上传（见 `../
 
 ## 首次构建
 
-本目录不含 `android/`、`ios/` 平台脚手架（由 Flutter 工具生成）。装好 Flutter SDK 后：
+平台脚手架（android/ ios/ windows/）已生成并提交。装好 Flutter SDK 后：
 
 ```bash
 cd mobile
-flutter create . --org io.github --project-name localtransfer \
-  --platforms=android,ios   # 生成平台目录（不会覆盖 lib/ 与 pubspec.yaml）
 flutter pub get
-flutter run                 # 连接设备/模拟器
-flutter build apk --release
+flutter run                          # 连接 Android 设备/模拟器
+flutter build apk --release          # Android APK（需要 Android SDK + JDK 17）
 # iOS: flutter build ipa（需要 macOS + Xcode）
+# Windows 桌面（开发验证用，已实测编译通过）：
+flutter build windows --release
 ```
 
-### Android 必要配置（android/app/src/main/AndroidManifest.xml）
+> 国内网络建议先设镜像：
+> `FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn`、
+> `PUB_HOSTED_URL=https://pub.flutter-io.cn`
 
-`<manifest>` 下加权限（`</application>` 之后、`</manifest>` 之前）：
+### Android 权限（已配置）
 
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-```
+`android/app/src/main/AndroidManifest.xml` 已含 `INTERNET` 和
+`CHANGE_WIFI_MULTICAST_STATE`（多播发现需要）。
 
-接收的文件保存在应用外部专项目录（`Android/data/io.github.localtransfer/files/../LocalTransfer`），
-无需存储权限；如需存入公共下载目录，后续版本用 MediaStore 实现。
+接收的文件保存在应用外部专项目录，无需存储权限；如需存入公共下载目录，
+后续版本用 MediaStore 实现。iOS 加 `NSLocalNetworkUsageDescription` 描述即可。
 
-iOS 无需额外权限配置（Info.plist 的本地网络描述可加：
-`NSLocalNetworkUsageDescription` = 访问局域网传输文件）。
+## 已验证（Windows 目标）
+
+- `flutter analyze`：0 问题
+- `flutter test`：5/5 通过（协议编解码与桌面端 serde 格式一致性）
+- `flutter build windows --release`：成功
+- 与桌面端互通实测：UDP 多播双向发现 ✓、桌面端向本机 HTTP 服务发消息 200 ✓、
+  端口自动避让（桌面 17878/17879，移动端 17880）✓
 
 ## 代码结构
 
