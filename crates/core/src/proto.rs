@@ -20,7 +20,7 @@ pub const DISCOVERY_PORT: u16 = 17878;
 pub const DEFAULT_HTTP_PORT: u16 = 17878;
 
 /// 心跳/离线判定（announce 周期：前 6s 每 2s，之后每 10s；超时即判离线）
-pub const DEVICE_TIMEOUT_SECS: u64 = 35;
+pub const DEVICE_TIMEOUT_SECS: u64 = 15;
 
 // ---------------------------------------------------------------------------
 // 发现协议
