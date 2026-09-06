@@ -275,7 +275,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           ))
                       .toList(),
                 );
-          // 诊断栏：排查"看不到对方"类问题（收包计数、锁状态）
+          // 诊断栏：排查"看不到对方"类问题（收包计数、锁状态、构建版本）
           final d = app.disc;
           return Column(
             children: [
@@ -288,7 +288,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     .surfaceContainerHighest
                     .withValues(alpha: 0.5),
                 child: Text(
-                  '收包 ${d.rxPackets} · 发现包 ${d.rxAnnounces} · 发包 ${d.txPackets}'
+                  'b0906e · 收包 ${d.rxPackets} · 发现包 ${d.rxAnnounces} · 发包 ${d.txPackets}'
                   ' · 多播锁 ${d.multicastLockOk ? "√" : "×"}'
                   '${d.lastRxFrom.isEmpty ? "" : " · 最近来源 ${d.lastRxFrom}"}',
                   style: const TextStyle(fontSize: 10, color: Colors.grey),

@@ -218,6 +218,11 @@ class Discovery extends ChangeNotifier {
   }
 
   void _pruneOffline(Timer _) {
+    debugPrune();
+  }
+
+  /// 超时清理（手动设备除外）；独立出来供测试
+  void debugPrune() {
     final before = peers.length;
     peers.removeWhere((_, p) =>
         !p.manual &&

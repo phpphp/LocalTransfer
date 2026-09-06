@@ -74,7 +74,10 @@ class TransferApi {
     }
     final token = (jsonDecode(pr.body) as Map<String, dynamic>)['token'] as String? ?? '';
 
-    // 2) 逐文件上传（顺序，避免抢带宽；与桌面端行为一致）
+    // 2) 逐文件上传（顺序，避免抢带宽；与桌面端行为一致）。
+    //    注意：必须先 send 再填 sink——StreamedRequest 的 sink 在无消费者时
+    //    会反压阻塞，先填后 send 的写法在 MB 级文件上直接死锁
+    //    （手机端文件传输失败的根因，已用 probe 复现）。
     for (var i = 0; i < files.length; i++) {
       final (meta, path) = files[i];
       final f = File(path);
@@ -85,6 +88,7 @@ class TransferApi {
       );
       req.headers['Content-Type'] = 'application/octet-stream';
       req.contentLength = total;
+      final respFuture = _http.send(req);
       var transferred = 0;
       final raf = f.openSync();
       try {
@@ -102,12 +106,13 @@ class TransferApi {
         raf.closeSync();
       }
       await req.sink.close();
-      final resp = await _http.send(req).timeout(const Duration(minutes: 10));
+      final resp = await respFuture.timeout(const Duration(minutes: 10));
       if (resp.statusCode != 200) {
+        final body = await resp.stream.bytesToString();
         // 中断后续文件：通知对方取消
         unawaited(_http.post(
             Uri.parse('${peer.httpBase}/api/transfer/cancel/$token')));
-        throw '上传失败（${resp.statusCode}）';
+        throw '上传失败（${resp.statusCode}）：$body';
       }
     }
   }
