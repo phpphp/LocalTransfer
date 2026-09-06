@@ -53,7 +53,7 @@ impl RootView {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
-            // 本机卡片：固定高度 + 行高显式约束，避免两行文字把内容顶出下边界
+            // 本机卡片：点击显示二维码（手机扫码添加本机 / 打开网页客户端）
             .child(
                 h_flex()
                     .id("me-card")
@@ -63,6 +63,12 @@ impl RootView {
                     .px_3()
                     .gap_2p5()
                     .items_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(cx.theme().list_hover))
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.show_web_qr = !this.show_web_qr;
+                        cx.notify();
+                    }))
                     .border_b_1()
                     .border_color(cx.theme().sidebar_border)
                     .child(initial_avatar(&me_name, 36., cx))

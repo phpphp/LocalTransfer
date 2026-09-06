@@ -300,7 +300,7 @@ impl RootView {
         .detach();
     }
 
-    /// 网页客户端二维码弹窗（手机扫码即用）
+    /// 本机二维码弹窗（手机扫码添加本机 / 打开网页客户端）
     fn render_web_qr_modal(&self, cx: &mut Context<Self>) -> AnyElement {
         let url = format!(
             "http://{}:{}/",
@@ -371,7 +371,7 @@ impl RootView {
                         div()
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("网页客户端"),
+                            .child("本机二维码"),
                     )
                     .children(qr)
                     .child(
@@ -390,7 +390,7 @@ impl RootView {
                         div()
                             .text_xs()
                             .text_color(self.fg_muted(cx))
-                            .child("手机扫码或输入地址 · 同一局域网内使用"),
+                            .child("手机扫码添加本机或打开网页客户端 · 同一局域网内使用"),
                     )
                     .child(
                         Button::new("qr-close")
