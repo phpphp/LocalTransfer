@@ -362,7 +362,8 @@ async fn prune_loop(
 ) {
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            // 2s 一查：15s 超时下最坏 17s 判离线（配合节流单播回复，误判率低）
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             _ = shutdown.cancelled() => break,
         }
         let downs = {
