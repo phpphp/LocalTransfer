@@ -7,6 +7,9 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -73,7 +76,8 @@ class AppState {
             fileName: fileName,
             fileSize: total,
             outgoing: false,
-            atMs: DateTime.now().millisecondsSinceEpoch));
+            atMs: DateTime.now().millisecondsSinceEpoch,
+            path: path));
       },
     );
     final port = await server.start();
@@ -128,19 +132,35 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  /// 手动添加设备（发现不通时按 IP 直连）
+  /// 添加设备：扫码 或 手动输入 IP
   Future<void> _addManual() async {
     final c = TextEditingController();
-    final err = await showDialog<String>(
+    final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('添加设备'),
-        content: TextField(
-          controller: c,
-          autofocus: true,
-          keyboardType: TextInputType.url,
-          decoration:
-              const InputDecoration(hintText: '192.168.1.5 或 192.168.1.5:17878'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('方式一：在电脑端点头像显示二维码，手机扫码',
+                style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('扫码添加'),
+              onPressed: () => Navigator.pop(ctx, '__scan__'),
+            ),
+            const Divider(height: 24),
+            const Text('方式二：手动输入地址', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: c,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                  hintText: '192.168.1.5 或 192.168.1.5:17878',
+                  isDense: true),
+            ),
+          ],
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
@@ -150,13 +170,75 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ],
       ),
     );
-    if (err == null || err.isEmpty) return;
-    final fail = await app.disc.addManual(err);
+    if (choice == null || choice.isEmpty) return;
+    var addr = choice;
+    if (choice == '__scan__') {
+      final scanned = await Navigator.push<String>(
+        context,
+        MaterialPageRoute(builder: (_) => const ScannerPage()),
+      );
+      if (scanned == null || scanned.isEmpty) return;
+      addr = scanned;
+    }
+    final fail = await app.disc.addManual(addr);
     if (!mounted) return;
     if (fail != null) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(fail)));
     }
+  }
+
+  /// 本机二维码（其他设备扫码添加本机）
+  Future<void> _showMyQr() async {
+    final ip = await _myLanIp();
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('本机二维码'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(12),
+              child: QrImageView(
+                data: 'http://$ip:${app.me.port}',
+                size: 200,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text('$ip:${app.me.port}',
+                style: const TextStyle(fontSize: 13)),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
+        ],
+      ),
+    );
+  }
+
+  /// 本机局域网 IPv4（优先私网地址）
+  static Future<String> _myLanIp() async {
+    try {
+      final ifaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      for (final i in ifaces) {
+        for (final a in i.addresses) {
+          if (a.isLoopback) continue;
+          if (a.address.startsWith('192.168.') ||
+              a.address.startsWith('10.') ||
+              a.address.startsWith('172.')) {
+            return a.address;
+          }
+        }
+      }
+      for (final i in ifaces) {
+        for (final a in i.addresses) {
+          if (!a.isLoopback) return a.address;
+        }
+      }
+    } catch (_) {}
+    return '127.0.0.1';
   }
 
   void _showIncoming(IncomingReq req) {
@@ -201,8 +283,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         title: Text(app.me.name),
         actions: [
           IconButton(
+            icon: const Icon(Icons.qr_code),
+            tooltip: '本机二维码',
+            onPressed: _showMyQr,
+          ),
+          IconButton(
             icon: const Icon(Icons.add),
-            tooltip: '手动添加设备（IP 直连）',
+            tooltip: '添加设备（扫码或 IP 直连）',
             onPressed: _addManual,
           ),
           IconButton(
@@ -302,6 +389,57 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 }
 
+/// 扫码添加设备页（扫电脑端头像点出的二维码）
+class ScannerPage extends StatefulWidget {
+  const ScannerPage({super.key});
+  @override
+  State<ScannerPage> createState() => _ScannerPageState();
+}
+
+class _ScannerPageState extends State<ScannerPage> {
+  final MobileScannerController _ctrl = MobileScannerController();
+  bool _done = false;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture cap) {
+    if (_done) return;
+    final raw = cap.barcodes.firstOrNull?.rawValue;
+    if (raw == null || raw.isEmpty) return;
+    _done = true;
+    Navigator.pop(context, raw);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('扫码添加设备')),
+      body: Stack(
+        children: [
+          MobileScanner(
+            controller: _ctrl,
+            onDetect: _onDetect,
+          ),
+          const Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Text(
+                '对准电脑端头像二维码（http://IP:端口）',
+                style: TextStyle(color: Colors.white, fontSize: 13),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class ChatPage extends StatefulWidget {
   final String peerId;
   const ChatPage({super.key, required this.peerId});
@@ -350,6 +488,17 @@ class _ChatPageState extends State<ChatPage> {
       if (mounted) {
         setState(() => _status = '$e');
       }
+    }
+  }
+
+  /// 打开接收到的文件（系统默认应用；目录则在文件管理器中打开）
+  Future<void> _openFile(ChatMsg m) async {
+    final p = m.path;
+    if (p == null) return;
+    final r = await OpenFilex.open(p);
+    if (r.type != ResultType.done && mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('打开失败：${r.message}')));
     }
   }
 
@@ -449,22 +598,29 @@ class _ChatPageState extends State<ChatPage> {
                             borderRadius: BorderRadius.circular(14),
                           ),
                           child: m.isFile
-                              ? Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(Icons.insert_drive_file, size: 18),
-                                    const SizedBox(width: 6),
-                                    Flexible(
-                                        child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(m.fileName,
-                                            overflow: TextOverflow.ellipsis),
-                                        Text(fmtSize(m.fileSize),
-                                            style: const TextStyle(fontSize: 11)),
-                                      ],
-                                    )),
-                                  ],
+                              ? GestureDetector(
+                                  onTap: () => _openFile(m),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.insert_drive_file, size: 18),
+                                      const SizedBox(width: 6),
+                                      Flexible(
+                                          child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(m.fileName,
+                                              overflow: TextOverflow.ellipsis),
+                                          Text(
+                                              m.path != null
+                                                  ? '${fmtSize(m.fileSize)} · 点击打开'
+                                                  : fmtSize(m.fileSize),
+                                              style:
+                                                  const TextStyle(fontSize: 11)),
+                                        ],
+                                      )),
+                                    ],
+                                  ),
                                 )
                               : Text(
                                   m.text,

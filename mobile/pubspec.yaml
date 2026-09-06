@@ -22,6 +22,12 @@ dependencies:
   uuid: ^4.4.0
   # 设备名/指纹持久化
   shared_preferences: ^2.2.0
+  # 扫码添加设备
+  mobile_scanner: ^7.0.1
+  # 二维码生成（本机地址码）
+  qr_flutter: ^4.1.0
+  # 打开收到的文件
+  open_filex: ^4.5.0
 
 dev_dependencies:
   flutter_test:

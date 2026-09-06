@@ -93,12 +93,14 @@ class ChatMsg {
   final int fileSize;
   final bool outgoing;
   final int atMs;
+  final String? path; // 接收文件的落盘路径（点击打开用）
   ChatMsg({
     this.text = '',
     this.fileName = '',
     this.fileSize = 0,
     required this.outgoing,
     required this.atMs,
+    this.path,
   });
   bool get isFile => fileName.isNotEmpty;
 }
