@@ -96,12 +96,13 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   String? _err;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     app.init().then((_) {
       if (mounted) setState(() {});
     }).catchError((e) {
@@ -109,6 +110,52 @@ class _HomePageState extends State<HomePage> {
     });
     // 桌面端发来的接收请求 → 弹确认
     _pendingIncoming.stream.listen(_showIncoming);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 进程退出路径（退出即广播 bye，桌面端立刻判离线；被系统强杀时
+    // 由 15s 心跳超时兜底）
+    if (state == AppLifecycleState.detached) {
+      app.disc.shutdown();
+    }
+  }
+
+  /// 手动添加设备（发现不通时按 IP 直连）
+  Future<void> _addManual() async {
+    final c = TextEditingController();
+    final err = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加设备'),
+        content: TextField(
+          controller: c,
+          autofocus: true,
+          keyboardType: TextInputType.url,
+          decoration:
+              const InputDecoration(hintText: '192.168.1.5 或 192.168.1.5:17878'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, c.text.trim()),
+              child: const Text('连接')),
+        ],
+      ),
+    );
+    if (err == null || err.isEmpty) return;
+    final fail = await app.disc.addManual(err);
+    if (!mounted) return;
+    if (fail != null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(fail)));
+    }
   }
 
   void _showIncoming(IncomingReq req) {
@@ -153,6 +200,11 @@ class _HomePageState extends State<HomePage> {
         title: Text(app.me.name),
         actions: [
           IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: '手动添加设备（IP 直连）',
+            onPressed: _addManual,
+          ),
+          IconButton(
             icon: const Icon(Icons.edit),
             tooltip: '改名',
             onPressed: () async {
@@ -187,37 +239,61 @@ class _HomePageState extends State<HomePage> {
         builder: (context, _) {
           final peers = app.disc.peers.values.where((p) => p.online(deviceTimeoutSecs)).toList()
             ..sort((a, b) => a.info.name.compareTo(b.info.name));
-          if (peers.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.wifi_find, size: 48, color: Colors.grey),
-                  SizedBox(height: 12),
-                  Text('等待设备上线…', style: TextStyle(color: Colors.grey)),
-                  Text('需与电脑在同一局域网', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
+          final list = peers.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.wifi_find, size: 48, color: Colors.grey),
+                      SizedBox(height: 12),
+                      Text('等待设备上线…', style: TextStyle(color: Colors.grey)),
+                      Text('需与电脑在同一局域网', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    ],
+                  ),
+                )
+              : ListView(
+                  children: peers
+                      .map((p) => ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor:
+                                  Theme.of(context).colorScheme.primaryContainer,
+                              child: Text(p.info.name.characters.first),
+                            ),
+                            title: Text(p.info.name),
+                            subtitle: Text(
+                                '${p.info.plat} · ${p.addr.address}:${p.info.port}',
+                                style: const TextStyle(fontSize: 12)),
+                            trailing: p.manual
+                                ? const Icon(Icons.link, size: 16, color: Colors.grey)
+                                : null,
+                            onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                      builder: (_) => ChatPage(peerId: p.info.id)),
+                                ),
+                          ))
+                      .toList(),
+                );
+          // 诊断栏：排查"看不到对方"类问题（收包计数、锁状态）
+          final d = app.disc;
+          return Column(
+            children: [
+              Expanded(child: list),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                color: Theme.of(context)
+                    .colorScheme
+                    .surfaceContainerHighest
+                    .withValues(alpha: 0.5),
+                child: Text(
+                  '收包 ${d.rxPackets} · 发现包 ${d.rxAnnounces} · 发包 ${d.txPackets}'
+                  ' · 多播锁 ${d.multicastLockOk ? "√" : "×"}'
+                  '${d.lastRxFrom.isEmpty ? "" : " · 最近来源 ${d.lastRxFrom}"}',
+                  style: const TextStyle(fontSize: 10, color: Colors.grey),
+                ),
               ),
-            );
-          }
-          return ListView(
-            children: peers
-                .map((p) => ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                        child: Text(p.info.name.characters.first),
-                      ),
-                      title: Text(p.info.name),
-                      subtitle: Text(
-                          '${p.info.plat} · ${p.addr.address}:${p.info.port}',
-                          style: const TextStyle(fontSize: 12)),
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => ChatPage(peerId: p.info.id)),
-                      ),
-                    ))
-                .toList(),
+            ],
           );
         },
       ),

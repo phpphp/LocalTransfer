@@ -10,6 +10,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 
 import 'proto.dart';
 
@@ -18,10 +19,17 @@ class Peer {
   final DeviceInfo info;
   final InternetAddress addr;
   DateTime lastSeen;
-  Peer({required this.info, required this.addr, required this.lastSeen});
+  /// 手动添加的设备不参与超时清理（发现不通时的直连兜底）
+  final bool manual;
+  Peer({
+    required this.info,
+    required this.addr,
+    required this.lastSeen,
+    this.manual = false,
+  });
   String get httpBase => 'http://${addr.address}:${info.port}';
   bool online(int timeoutSecs) =>
-      DateTime.now().difference(lastSeen).inSeconds < timeoutSecs;
+      manual || DateTime.now().difference(lastSeen).inSeconds < timeoutSecs;
 }
 
 class Discovery extends ChangeNotifier {
@@ -34,6 +42,12 @@ class Discovery extends ChangeNotifier {
   /// 每次设备上线/信息变化发一条
   Stream<Peer> get onPeerUp => _ctrl.stream;
   final Map<String, DateTime> _lastUnicastReply = {};
+  // 诊断计数（列表页底部显示，排查发现问题时看）
+  int rxPackets = 0;
+  int txPackets = 0;
+  int rxAnnounces = 0;
+  String lastRxFrom = '';
+  bool multicastLockOk = false;
 
   Discovery(this.me);
 
@@ -42,10 +56,11 @@ class Discovery extends ChangeNotifier {
     //（平台通道在 MainActivity.kt 实现；其他平台静默跳过）
     try {
       await const MethodChannel('localtransfer/multicast').invokeMethod('acquire');
+      multicastLockOk = true;
     } on PlatformException {
-      // 非 Android 平台无此通道
+      multicastLockOk = false;
     } on MissingPluginException {
-      // 桌面/测试环境
+      multicastLockOk = false; // 桌面/测试环境
     }
     final sock = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4, discoveryPort,
@@ -64,17 +79,43 @@ class Discovery extends ChangeNotifier {
       if (event != RawSocketEvent.read) return;
       final dg = sock.receive();
       if (dg == null) return;
+      rxPackets++;
       _onPacket(String.fromCharCodes(dg.data), dg.address);
     });
-    // 立即宣布一次 + 周期心跳（前 10s 每 2s，之后每 10s，与桌面端节奏一致）
+    // 立即宣布一次 + 每 5s 心跳（15s 超时下允许丢 2 个周期）
     _announce();
-    var tick = 0;
-    _tick = Timer.periodic(const Duration(seconds: 5), (_) {
-      tick++;
-      if (tick <= 2 || tick % 2 == 0) _announce();
+    _tick = Timer.periodic(const Duration(seconds: 5), (_) => _announce());
+    // 离线清理（2s 一查，手动添加的设备除外）
+    _prune = Timer.periodic(const Duration(seconds: 2), _pruneOffline);
+  }
+
+  /// 手动添加设备（发现不通时直连兜底）：探测 /api/info 成则入表
+  Future<String?> addManual(String hostPort) {
+    return Future(() async {
+      var hp = hostPort.trim();
+      int port = defaultHttpPort;
+      if (hp.contains(':')) {
+        final parts = hp.split(':');
+        hp = parts[0];
+        port = int.tryParse(parts[1]) ?? defaultHttpPort;
+      }
+      if (hp.isEmpty) return '请输入 IP';
+      // 复用 API 客户端探测（需要独立实例避免循环依赖）
+      final r = await http
+          .get(Uri.parse('http://$hp:$port/api/info'))
+          .timeout(const Duration(seconds: 3));
+      if (r.statusCode != 200) return '对方返回 ${r.statusCode}';
+      final info = DeviceInfo.fromJson(jsonDecode(r.body) as Map<String, dynamic>);
+      if (info.v != protocolVersion) return '协议版本不兼容（对方 v${info.v}）';
+      peers[info.id] = Peer(
+        info: info,
+        addr: InternetAddress(hp),
+        lastSeen: DateTime.now(),
+        manual: true,
+      );
+      notifyListeners();
+      return null; // 成功
     });
-    // 离线清理
-    _prune = Timer.periodic(const Duration(seconds: 5), _pruneOffline);
   }
 
   void _onPacket(String raw, InternetAddress from) {
@@ -86,6 +127,8 @@ class Discovery extends ChangeNotifier {
     }
     if (kind != 'announce' || info == null) return;
     if (info.id == me.id || info.v != protocolVersion) return;
+    rxAnnounces++;
+    lastRxFrom = from.address;
     final existed = peers[info.id];
     peers[info.id] = Peer(info: info, addr: from, lastSeen: DateTime.now());
     // 单播回自己的 announce（节流）
@@ -93,6 +136,7 @@ class Discovery extends ChangeNotifier {
     if (last == null || DateTime.now().difference(last).inSeconds >= 2) {
       _lastUnicastReply[info.id] = DateTime.now();
       _sock?.send(utf8.encode(jsonEncode(me.toAnnounce())), from, discoveryPort);
+      txPackets++;
     }
     if (existed == null || existed.info != info || !existed.online(deviceTimeoutSecs)) {
       _ctrl.add(peers[info.id]!);
@@ -102,8 +146,9 @@ class Discovery extends ChangeNotifier {
 
   void _pruneOffline(Timer _) {
     final before = peers.length;
-    peers.removeWhere(
-        (_, p) => DateTime.now().difference(p.lastSeen).inSeconds >= deviceTimeoutSecs);
+    peers.removeWhere((_, p) =>
+        !p.manual &&
+        DateTime.now().difference(p.lastSeen).inSeconds >= deviceTimeoutSecs);
     if (peers.length != before) notifyListeners();
   }
 
@@ -115,6 +160,7 @@ class Discovery extends ChangeNotifier {
     try {
       _sock?.send(data, InternetAddress('255.255.255.255'), discoveryPort);
     } catch (_) {}
+    txPackets += 2;
   }
 
   /// 退出时广播 bye（桌面端会立即把本机标记离线）
