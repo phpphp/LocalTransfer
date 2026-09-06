@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:qr_flutter/qr_flutter.dart';
@@ -40,16 +41,24 @@ class LocalTransferApp extends StatelessWidget {
   }
 }
 
-/// 全局应用状态（发现 + 服务 + 会话）
-class AppState {
+/// 全局应用状态（发现 + 服务 + 会话）——接收进度变化时通知 UI（节流）
+class AppState extends ChangeNotifier {
   late final DeviceInfo me;
   late final Discovery disc;
   late final TransferApi api;
   late final AppServer server;
   final Map<String, List<ChatMsg>> chats = {};
   final Map<String, String> peerNames = {}; // id → name（离线也保留）
-  final Map<String, TransferProgress> liveProgress = {}; // "idx-transferred"…发送进度按会话展示
+  final Map<String, RecvProgress> recvProgress = {}; // token → 进度
+  DateTime _lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
   bool ready = false;
+
+  void _notifyThrottled() {
+    final now = DateTime.now();
+    if (now.difference(_lastNotify).inMilliseconds < 100) return;
+    _lastNotify = now;
+    notifyListeners();
+  }
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -71,16 +80,27 @@ class AppState {
       me: me,
       onMessage: (msg, peerId) => chats.putIfAbsent(peerId, () => []).add(msg),
       onIncoming: (req) => _pendingIncoming.add(req),
+      // 接收进度 → 全局表（UI 节流刷新）
+      onRecvProgress: (token, p) {
+        recvProgress[token] = p;
+        _notifyThrottled();
+      },
+      onRecvEnd: (token) {
+        recvProgress.remove(token);
+        notifyListeners();
+      },
       // 整批（一次会话）完成 → 合并为一张卡片：文件夹名或"N 个文件"
       onBatchDone: (peerId, peer, files, saveDir) {
         final folder = _folderName(files);
-        final path = _folderPath(files, saveDir);
+        final target = _openTarget(files);
+        final location = _location(files);
         chats.putIfAbsent(peerId, () => []).add(ChatMsg(
             fileName: folder,
             fileSize: files.fold<int>(0, (s, f) => s + f.size),
             outgoing: false,
             atMs: DateTime.now().millisecondsSinceEpoch,
-            path: path));
+            path: target,
+            location: location));
       },
     );
     final port = await server.start();
@@ -116,16 +136,42 @@ String _folderName(List<DoneFile> files) {
   return folder ?? '${files.length} 个文件';
 }
 
-/// 批次卡片点击打开的路径：文件夹 → 公共下载目录下的文件夹根
-String _folderPath(List<DoneFile> files, String saveDir) {
+/// 卡片点击的打开目标：
+/// 文件 URI（openUri）→ 文件路径 → 文件夹 rel（openFolder 定位）→ 应用目录
+/// 约定：uri:… / path:… / folder:…
+String _openTarget(List<DoneFile> files) {
+  if (files.length == 1) {
+    final f = files[0];
+    if (f.uri != null) return 'uri:${f.uri}|${f.relPath}';
+    if (f.publicPath != null) return 'path:${f.publicPath}';
+    return 'folder:LocalTransfer';
+  }
+  // 多文件：文件夹（同 rel 首段）或下载根
+  String? folder;
   for (final f in files) {
-    final p = f.publicPath;
-    if (p != null && p.contains('/')) {
-      final i = p.lastIndexOf('/');
-      return p.substring(0, i); // 同一文件夹下的文件 → 去掉文件名即文件夹
+    final i = f.relPath.indexOf('/');
+    if (i <= 0) return 'folder:LocalTransfer';
+    final first = f.relPath.substring(0, i);
+    if (folder == null) {
+      folder = first;
+    } else if (folder != first) {
+      return 'folder:LocalTransfer';
     }
   }
-  return saveDir;
+  return 'folder:LocalTransfer/$folder';
+}
+
+/// 卡片上显示的保存位置（人类可读）
+String _location(List<DoneFile> files) {
+  final target = _openTarget(files);
+  if (target.startsWith('uri:')) {
+    final rel = target.split('|').last;
+    return 'Download/LocalTransfer/$rel';
+  }
+  if (target.startsWith('folder:')) {
+    return 'Download/${target.substring(7)}';
+  }
+  return 'Download/LocalTransfer';
 }
 
 /// 待确认的接收请求流（UI 弹卡片确认）
@@ -504,14 +550,61 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  /// 打开接收到的文件（系统默认应用；目录则在文件管理器中打开）
+  /// 打开接收到的文件/文件夹：
+  /// 文件 → 内容 URI（系统应用打开）；文件夹 → 系统文件管理器定位
   Future<void> _openFile(ChatMsg m) async {
-    final p = m.path;
-    if (p == null) return;
-    final r = await OpenFilex.open(p);
-    if (r.type != ResultType.done && mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('打开失败：${r.message}')));
+    final t = m.path;
+    if (t == null) return;
+    try {
+      if (t.startsWith('uri:')) {
+        final parts = t.substring(4).split('|');
+        final ext = parts.length > 1
+            ? parts[1].split('.').lastOrNull?.toLowerCase()
+            : null;
+        final mime = _mimeOf(ext);
+        await const MethodChannel('localtransfer/downloads').invokeMethod(
+            'openUri', {'uri': parts[0], 'mime': mime});
+      } else if (t.startsWith('folder:')) {
+        await const MethodChannel('localtransfer/downloads')
+            .invokeMethod('openFolder', {'rel': t.substring(7)});
+      } else if (t.startsWith('path:')) {
+        final r = await OpenFilex.open(t.substring(5));
+        if (r.type != ResultType.done && mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('打开失败：${r.message}')));
+        }
+      }
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('打开失败：${e.message}')));
+      }
+    }
+  }
+
+  static String _mimeOf(String? ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'mp4':
+        return 'video/mp4';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'pdf':
+        return 'application/pdf';
+      case 'txt':
+      case 'md':
+      case 'log':
+        return 'text/plain';
+      default:
+        return 'application/octet-stream';
     }
   }
 
@@ -576,6 +669,39 @@ class _ChatPageState extends State<ChatPage> {
       ),
       body: Column(
         children: [
+          // 接收进度条（进行中的接收会话）
+          ListenableBuilder(
+            listenable: app,
+            builder: (context, _) {
+              final rp = app.recvProgress.values
+                  .where((p) => p.peerId == widget.peerId)
+                  .toList();
+              if (rp.isEmpty) return const SizedBox.shrink();
+              final p = rp.first;
+              final frac = p.total > 0 ? p.transferred / p.total : 0.0;
+              return Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                color: Theme.of(context)
+                    .colorScheme
+                    .surfaceContainerHighest
+                    .withValues(alpha: 0.5),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '接收 ${p.label}（${p.fileIdx + 1}/${p.fileCount}）'
+                      ' · ${(frac * 100).toStringAsFixed(0)}%',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    LinearProgressIndicator(value: frac.clamp(0.0, 1.0)),
+                  ],
+                ),
+              );
+            },
+          ),
           if (_status != null)
             Container(
               width: double.infinity,
@@ -616,7 +742,11 @@ class _ChatPageState extends State<ChatPage> {
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.insert_drive_file, size: 18),
+                                      Icon(
+                                          (m.path ?? '').startsWith('folder:')
+                                              ? Icons.folder
+                                              : Icons.insert_drive_file,
+                                          size: 18),
                                       const SizedBox(width: 6),
                                       Flexible(
                                           child: Column(
@@ -624,6 +754,12 @@ class _ChatPageState extends State<ChatPage> {
                                         children: [
                                           Text(m.fileName,
                                               overflow: TextOverflow.ellipsis),
+                                          if (m.location != null)
+                                            Text(m.location!,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                    fontSize: 10,
+                                                    color: Colors.grey)),
                                           Text(
                                               m.path != null
                                                   ? '${fmtSize(m.fileSize)} · 点击打开'

@@ -2,9 +2,12 @@ package io.github.localtransfer
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -82,11 +85,12 @@ class MainActivity : FlutterActivity() {
                                 contentResolver.openOutputStream(uri)?.use { out ->
                                     File(src).inputStream().use { it.copyTo(out) }
                                 }
-                                // 反查真实路径（多数设备可用；失败则返回 null，Dart 侧回退原路径）
-                                contentResolver.query(
+                                // 返回 "path|uri"：真实路径（可能为 null）+ MediaStore URI（打开用）
+                                val realPath = contentResolver.query(
                                     uri, arrayOf(MediaStore.MediaColumns.DATA),
                                     null, null, null
                                 )?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                                "$realPath|${uri.toString()}"
                             } else {
                                 @Suppress("DEPRECATION")
                                 val dir = File(
@@ -103,6 +107,42 @@ class MainActivity : FlutterActivity() {
                             result.success(realPath)
                         } catch (e: Exception) {
                             result.error("SAVE_FAILED", e.message, null)
+                        }
+                    }
+                    "openUri" -> {
+                        val uriStr = call.argument<String>("uri") ?: run {
+                            result.error("NO_URI", null, null); return@setMethodCallHandler
+                        }
+                        val mime = call.argument<String>("mime") ?: "*/*"
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(Uri.parse(uriStr), mime)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("OPEN_FAILED", e.message, null)
+                        }
+                    }
+                    // 在系统文件管理器（"文件"应用）中打开并定位到 Download 下的目录
+                    "openFolder" -> {
+                        val rel = call.argument<String>("rel") ?: "LocalTransfer"
+                        val safe = rel.split('/')
+                            .filter { it.isNotEmpty() && it != "." && it != ".." }
+                            .joinToString("/")
+                        try {
+                            val docUri = DocumentsContract.buildDocumentUri(
+                                "com.android.externalstorage.documents",
+                                "primary:Download/$safe"
+                            )
+                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                setDataAndType(docUri, "vnd.android.document/directory")
+                            }
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("OPEN_FAILED", e.message, null)
                         }
                     }
                     else -> result.notImplemented()

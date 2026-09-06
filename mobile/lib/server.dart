@@ -28,7 +28,20 @@ class DoneFile {
   final String relPath;
   final int size;
   final String? publicPath; // Download/LocalTransfer/... 下的真实路径（失败为 null）
-  DoneFile(this.relPath, this.size, this.publicPath);
+  final String? uri; // MediaStore content URI（打开/分享用，失败为 null）
+  DoneFile(this.relPath, this.size, this.publicPath, this.uri);
+}
+
+/// 一次接收会话的实时进度（UI 展示用）
+class RecvProgress {
+  final String peerId;
+  final String label; // 文件夹名或文件名
+  final int fileIdx;
+  final int fileCount;
+  int transferred;
+  int total;
+  RecvProgress(this.peerId, this.label, this.fileIdx, this.fileCount,
+      this.transferred, this.total);
 }
 
 class RecvSession {
@@ -48,6 +61,10 @@ class AppServer {
   /// 整批传输完成（一次 prepare 会话的所有文件）→ 合并为一张卡片
   final void Function(String peerId, DeviceInfo peer, List<DoneFile> files,
       String saveDir) onBatchDone;
+  /// 接收进度（每读一块回调一次；UI 节流显示）
+  final void Function(String token, RecvProgress p) onRecvProgress;
+  /// 会话结束（完成/取消）→ 清理进度
+  final void Function(String token) onRecvEnd;
   HttpServer? _srv;
   final Map<String, RecvSession> _sessions = {};
 
@@ -56,6 +73,8 @@ class AppServer {
     required this.onMessage,
     required this.onIncoming,
     required this.onBatchDone,
+    required this.onRecvProgress,
+    required this.onRecvEnd,
   });
 
   int get port => _srv?.port ?? 0;
@@ -139,40 +158,64 @@ class AppServer {
         : '${sess.saveDir}${Platform.pathSeparator}${segs.join(Platform.pathSeparator)}';
     final f = File(path);
     await f.parent.create(recursive: true);
-    // v1：整读写入（shelf 便捷路径；超大文件的流式接收后续版本用 hijack）
-    final bytes = await r.read().expand((c) => c).toList();
-    await f.writeAsBytes(bytes, flush: true);
+    // 流式写入（不再整读进内存）+ 每块回调进度
+    final sink = f.openWrite();
+    var written = 0;
+    final label = relClean.contains('/')
+        ? relClean.substring(0, relClean.indexOf('/'))
+        : relClean;
+    await for (final chunk in r.read()) {
+      sink.add(chunk);
+      written += chunk.length;
+      onRecvProgress(
+          token,
+          RecvProgress(sess.peer.id, label, sess.completed, sess.files.length,
+              written, meta.size));
+    }
+    await sink.flush();
+    await sink.close();
     sess.completed++;
     // 转存公共下载目录（Download/LocalTransfer/...），文件管理器可见
-    final publicPath = await _publishToDownloads(path, relClean);
+    final pub = await _publishToDownloads(path, relClean);
+    final (publicPath, uri) = pub;
     sess.doneFiles.add(DoneFile(
       relClean.isEmpty ? meta.name : relClean,
-      bytes.length,
+      written,
       publicPath,
+      uri,
     ));
     if (sess.completed >= sess.files.length) {
       _sessions.remove(token);
+      onRecvEnd(token);
       // 整批完成 → 合并为一张卡片（文件夹名 / "N 个文件"）
       onBatchDone(sess.peer.id, sess.peer, sess.doneFiles, sess.saveDir);
     }
     return Response.ok('');
   }
 
-  /// 复制进公共下载目录（Android 平台通道 MediaStore；其他平台返回 null）
-  Future<String?> _publishToDownloads(String srcPath, String relPath) async {
+  /// 复制进公共下载目录（Android 平台通道 MediaStore）。
+  /// 返回 (真实路径?, contentURI?)。
+  Future<(String?, String?)> _publishToDownloads(
+      String srcPath, String relPath) async {
     try {
       final r = await const MethodChannel('localtransfer/downloads')
           .invokeMethod<String?>('save', {'path': srcPath, 'rel': relPath});
-      return (r == null || r.isEmpty) ? null : r;
+      if (r == null || r.isEmpty) return (null, null);
+      // Kotlin 返回 "path|uri"（path 可能为 "null"）
+      final parts = r.split('|');
+      final p = parts.isNotEmpty && parts[0] != 'null' ? parts[0] : null;
+      final u = parts.length > 1 && parts[1] != 'null' ? parts[1] : null;
+      return (p, u);
     } on PlatformException {
-      return null; // 非 Android / 失败：文件留在应用目录，仍可打开
+      return (null, null); // 非 Android / 失败：文件留在应用目录，仍可打开
     } on MissingPluginException {
-      return null;
+      return (null, null);
     }
   }
 
   Future<Response> _handleCancel(Request r, String token) async {
     _sessions.remove(token);
+    onRecvEnd(token);
     return Response.ok('');
   }
 

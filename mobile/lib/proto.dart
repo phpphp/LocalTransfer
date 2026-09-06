@@ -93,7 +93,8 @@ class ChatMsg {
   final int fileSize;
   final bool outgoing;
   final int atMs;
-  final String? path; // 接收文件的落盘路径（点击打开用）
+  final String? path; // 打开目标（uri:…/path:…/folder:… 约定，见 main.dart）
+  final String? location; // 保存位置（人类可读，卡片展示）
   ChatMsg({
     this.text = '',
     this.fileName = '',
@@ -101,6 +102,7 @@ class ChatMsg {
     required this.outgoing,
     required this.atMs,
     this.path,
+    this.location,
   });
   bool get isFile => fileName.isNotEmpty;
 }
