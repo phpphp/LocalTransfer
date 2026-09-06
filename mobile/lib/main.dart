@@ -136,17 +136,18 @@ String _folderName(List<DoneFile> files) {
   return folder ?? '${files.length} 个文件';
 }
 
-/// 卡片点击的打开目标：
-/// 文件 URI（openUri）→ 文件路径 → 文件夹 rel（openFolder 定位）→ 应用目录
-/// 约定：uri:… / path:… / folder:…
+/// 卡片点击的打开目标（约定前缀 uri:/path:/folder:）：
+/// 单文件：uri:URI|relPath|publicPath（URI 打开失败回退真实路径）
+/// 多文件：folder:RelPath（文件管理器定位；失败回退下载列表）
 String _openTarget(List<DoneFile> files) {
   if (files.length == 1) {
     final f = files[0];
-    if (f.uri != null) return 'uri:${f.uri}|${f.relPath}';
+    if (f.uri != null) {
+      return 'uri:${f.uri}|${f.relPath}|${f.publicPath ?? ''}';
+    }
     if (f.publicPath != null) return 'path:${f.publicPath}';
     return 'folder:LocalTransfer';
   }
-  // 多文件：文件夹（同 rel 首段）或下载根
   String? folder;
   for (final f in files) {
     final i = f.relPath.indexOf('/');
@@ -510,10 +511,11 @@ class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
   bool _sending = false;
   String? _status;
-  late final Peer _peer; // 进入会话时的快照（设备超时移除后仍可安全渲染）
+  late final Peer _peer; // 进入会话时的快照（设备被清理后兜底渲染）
 
-  Peer get peer => _peer;
-  String get peerName => _peer.info.name;
+  // 实时查表（TCP 保活持续刷新 lastSeen；用快照会导致"永远离线"）
+  Peer get peer => app.disc.peers[widget.peerId] ?? _peer;
+  String get peerName => peer.info.name;
 
   @override
   void initState() {
@@ -551,22 +553,32 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   /// 打开接收到的文件/文件夹：
-  /// 文件 → 内容 URI（系统应用打开）；文件夹 → 系统文件管理器定位
+  /// 单文件 → 内容 URI（失败回退真实路径）；文件夹 → 文件管理器定位（失败回退下载列表）
   Future<void> _openFile(ChatMsg m) async {
     final t = m.path;
     if (t == null) return;
+    const ch = MethodChannel('localtransfer/downloads');
     try {
       if (t.startsWith('uri:')) {
         final parts = t.substring(4).split('|');
         final ext = parts.length > 1
             ? parts[1].split('.').lastOrNull?.toLowerCase()
             : null;
-        final mime = _mimeOf(ext);
-        await const MethodChannel('localtransfer/downloads').invokeMethod(
-            'openUri', {'uri': parts[0], 'mime': mime});
+        try {
+          await ch.invokeMethod(
+              'openUri', {'uri': parts[0], 'mime': _mimeOf(ext)});
+          return;
+        } on PlatformException {
+          // 回退：真实路径打开
+          final p = parts.length > 2 ? parts[2] : '';
+          if (p.isNotEmpty) {
+            final r = await OpenFilex.open(p);
+            if (r.type == ResultType.done) return;
+          }
+          rethrow;
+        }
       } else if (t.startsWith('folder:')) {
-        await const MethodChannel('localtransfer/downloads')
-            .invokeMethod('openFolder', {'rel': t.substring(7)});
+        await ch.invokeMethod('openFolder', {'rel': t.substring(7)});
       } else if (t.startsWith('path:')) {
         final r = await OpenFilex.open(t.substring(5));
         if (r.type != ResultType.done && mounted) {
@@ -576,8 +588,8 @@ class _ChatPageState extends State<ChatPage> {
       }
     } on PlatformException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('打开失败：${e.message}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('打开失败：${e.message ?? '无可用应用'}')));
       }
     }
   }

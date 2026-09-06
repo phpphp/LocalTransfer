@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.app.DownloadManager
 import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
@@ -125,7 +126,8 @@ class MainActivity : FlutterActivity() {
                             result.error("OPEN_FAILED", e.message, null)
                         }
                     }
-                    // 在系统文件管理器（"文件"应用）中打开并定位到 Download 下的目录
+                    // 在系统文件管理器（"文件"应用）中打开并定位到 Download 下的目录；
+                    // 定位失败回退：打开系统下载列表
                     "openFolder" -> {
                         val rel = call.argument<String>("rel") ?: "LocalTransfer"
                         val safe = rel.split('/')
@@ -142,7 +144,14 @@ class MainActivity : FlutterActivity() {
                             startActivity(intent)
                             result.success(true)
                         } catch (e: Exception) {
-                            result.error("OPEN_FAILED", e.message, null)
+                            try {
+                                startActivity(
+                                    Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
+                                )
+                                result.success(true)
+                            } catch (e2: Exception) {
+                                result.error("OPEN_FAILED", "${e.message}; ${e2.message}", null)
+                            }
                         }
                     }
                     else -> result.notImplemented()
