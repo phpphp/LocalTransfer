@@ -73,6 +73,10 @@ class MainActivity : ComponentActivity() {
             if (uris.isNotEmpty()) App.sendPicked(uris)
         }
 
+    // 通知权限（前台服务通知，API 33+）
+    private val notifPerm =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     // 接收目录选择器（必须在 Activity 初始化期注册，Composable 内注册会崩）
     val pickDirLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -93,7 +97,11 @@ class MainActivity : ComponentActivity() {
                 ctx.getSharedPreferences("lt", Context.MODE_PRIVATE)
                     .edit().putString("save_dir", path).apply()
                 App.server.customSaveDir = path
-                MainActivity.toast(ctx, "已设为 $path")
+                App.saveDirDisplay = path
+                val writable = File(path).canWrite()
+                MainActivity.toast(ctx,
+                    if (writable) "已设为 $path"
+                    else "已设为 $path（当前不可写，请检查权限）")
             } else {
                 MainActivity.toast(ctx, "无法识别该目录的真实路径，请换一个")
             }
@@ -105,6 +113,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         App.init(applicationContext)
         setContent { App() }
+        // 通知权限（API 33+，前台服务通知用）
+        if (Build.VERSION.SDK_INT >= 33) {
+            notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+        // 前台服务：后台持续可接收
+        startForegroundService(Intent(this, TransferService::class.java))
     }
 
     fun startScan() {
@@ -112,6 +126,7 @@ class MainActivity : ComponentActivity() {
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
             setPrompt("对准电脑端二维码（http://IP:端口）")
             setBeepEnabled(false)
+            setOrientationLocked(true)   // 锁定为 Activity 方向（Manifest 已设横屏）
         })
     }
 
@@ -185,6 +200,10 @@ object App {
     var currentPeer by mutableStateOf<String?>(null)
     /** 需要"所有文件访问"权限（首次启动 / 权限被收回）→ UI 弹窗引导 */
     var needsAllFilesPermission by mutableStateOf(false)
+    /** 当前接收目录（弹窗显示用，选择后立即更新） */
+    var saveDirDisplay by mutableStateOf("")
+    /** 自动接收文件 */
+    var autoReceive by mutableStateOf(false)
 
     fun init(context: Context) {
         if (inited) return
@@ -198,6 +217,7 @@ object App {
         }
         val name = prefs.getString("device_name", null)
             ?: randomPoeticName().also { prefs.edit().putString("device_name", it).apply() }
+        autoReceive = prefs.getBoolean("auto_receive", false)
         me = DeviceInfo(id, name, "android", 0)
         api = TransferApi(me)
         server = MiniHttpServer(me, ctx, object : MiniHttpServer.Callbacks {
@@ -205,12 +225,19 @@ object App {
                 chats.getOrPut(peerId) { mutableListOf() }
                     .add(ChatEntry.Text(false, text, System.currentTimeMillis()))
             }
-            override fun onIncoming(req: IncomingReq) { pendingReq = req }
+            override fun onIncoming(req: IncomingReq) {
+                if (autoReceive) {
+                    req.decision.complete(true)
+                    MainActivity.toast(ctx,
+                        "自动接收 ${req.peer.name} 的 ${req.files.size} 个文件")
+                } else {
+                    pendingReq = req
+                }
+            }
             override fun onProgress(token: String, p: RecvProgress) { progress[token] = p }
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
-                progress.clear()
-                // 位置标注：有 MediaStore URI（公共下载目录）才标 Download；
-                // 只有缓存路径（转存失败兜底）标真实原因
+                progress.keys.filter { !it.startsWith("send") }
+                    .forEach { progress.remove(it) }
                 val anyPublic = files.any { it.uri != null }
                 val location = when {
                     anyPublic -> "Download/LocalTransfer"
@@ -231,6 +258,7 @@ object App {
         // 用户自定义过的（save_dir）优先。首次启动没权限时由 UI 弹窗引导授权。
         val saved = prefs.getString("save_dir", "")?.ifBlank { null }
         server.customSaveDir = saved ?: "/storage/emulated/0/Download/LocalTransfer"
+        saveDirDisplay = server.customSaveDir ?: ""
         needsAllFilesPermission = Build.VERSION.SDK_INT >= 30 &&
                 !Environment.isExternalStorageManager()
         disc = Discovery(me, ctx)
@@ -275,34 +303,51 @@ object App {
         val peerId = currentPeer ?: return
         val p = peers.value[peerId] ?: return
         GlobalScope.launch(Dispatchers.IO) {
-            main.post { sendStatus = "准备发送…" }
-            val metas = mutableListOf<Pair<FileMeta, String>>()
-            uris.forEach { uri ->
-                val name = queryName(uri)
-                val dst = File(ctx.cacheDir, "${UUID.randomUUID()}_$name")
-                ctx.contentResolver.openInputStream(uri)?.use { ins ->
-                    dst.outputStream().use { ins.copyTo(it) }
-                } ?: return@forEach
-                metas.add(FileMeta(UUID.randomUUID().toString(), name, name,
-                    dst.length()) to dst.path)
+            val sendKey = "send-${System.currentTimeMillis()}"
+            val totalLabel = run {
+                // 先读文件名+大小（拷贝到缓存，content URI 无法直接二次流式读）
+                val metas = mutableListOf<Pair<FileMeta, String>>()
+                uris.forEach { uri ->
+                    val name = queryName(uri)
+                    val dst = File(ctx.cacheDir, "${UUID.randomUUID()}_$name")
+                    ctx.contentResolver.openInputStream(uri)?.use { ins ->
+                        dst.outputStream().use { ins.copyTo(it) }
+                    } ?: return@forEach
+                    metas.add(FileMeta(UUID.randomUUID().toString(), name, name,
+                        dst.length()) to dst.path)
+                }
+                metas
             }
-            if (metas.isEmpty()) { main.post { sendStatus = null }; return@launch }
+            if (totalLabel.isEmpty()) { sendStatus = null; return@launch }
+            val metas = totalLabel
+            val title = if (metas.size == 1) metas[0].first.name
+                        else "${metas.size} 个文件"
+            val sum = metas.sumOf { it.first.size }
+            // 发送进度卡（消息流里，替代顶部状态条）
             main.post {
-                chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
-                    true,
-                    if (metas.size == 1) metas[0].first.name else "${metas.size} 个文件",
-                    metas.sumOf { it.first.size },
-                    System.currentTimeMillis(), null, emptyList()))
+                progress[sendKey] = RecvProgress(peerId, title, 0, metas.size, 0, sum)
             }
             runCatching {
-                api.sendFiles(p, metas) { i, t, total ->
+                api.sendFiles(p, metas) { i, t, tot ->
                     main.post {
-                        sendStatus = "发送 ${i + 1}/${metas.size}：" +
-                            "${t * 100 / total.coerceAtLeast(1)}%"
+                        progress[sendKey] = RecvProgress(peerId, title, i, metas.size, t, tot)
                     }
                 }
-                main.post { sendStatus = null }
-            }.onFailure { main.post { sendStatus = it.message } }
+                main.post {
+                    progress.remove(sendKey)
+                    // 发送完成的卡片带源文件路径（可点击打开）
+                    val sent = metas.map { m ->
+                        ReceivedFile(m.first.name, m.first.size, null, m.second)
+                    }
+                    chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
+                        true, title, sum, System.currentTimeMillis(), null, sent))
+                }
+            }.onFailure {
+                main.post {
+                    progress.remove(sendKey)
+                    sendStatus = it.message
+                }
+            }
         }
     }
 
@@ -322,6 +367,8 @@ private val IndigoDark = androidx.compose.ui.graphics.Color(0xFF4F46E5)
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
+    val ctx = LocalContext.current
+    BackInterceptor(ctx)
     MaterialTheme(colorScheme = darkColorScheme(primary = Indigo)) {
         val peerId = App.currentPeer
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
@@ -452,6 +499,25 @@ fun DeviceListScreen() {
     }
 }
 
+/** 返回手势：会话页返回列表；列表页双击退出（全面屏手势不再直接最小化） */
+@Composable
+fun BackInterceptor(ctx: Context) {
+    var lastBack by remember { mutableStateOf(0L) }
+    androidx.activity.compose.BackHandler(enabled = true) {
+        if (App.currentPeer != null) {
+            App.currentPeer = null
+        } else {
+            val now = System.currentTimeMillis()
+            if (now - lastBack < 2000) {
+                (ctx as? ComponentActivity)?.finish()
+            } else {
+                lastBack = now
+                MainActivity.toast(ctx, "再按一次退出")
+            }
+        }
+    }
+}
+
 /** 权限引导弹窗（可跳过，收文件时会再弹） */
 @Composable
 fun AllFilesPermissionDialog() {
@@ -489,10 +555,8 @@ fun SettingsDialog(onDismiss: () -> Unit) {
     val prefs = remember { ctx.getSharedPreferences("lt", Context.MODE_PRIVATE) }
     val activity = ctx as? MainActivity
     // 当前生效目录（选择器回调在 Activity 侧写 prefs，弹窗重建时读最新）
-    var currentDir by remember {
-        mutableStateOf(App.server.customSaveDir
-            ?: "/storage/emulated/0/Download/LocalTransfer")
-    }
+    // 直接读响应式状态——目录选择后弹窗立即刷新
+    val currentDir = App.saveDirDisplay.ifBlank { "/storage/emulated/0/Download/LocalTransfer" }
     val hasAllFiles = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
 
     AlertDialog(
@@ -517,11 +581,25 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                         val def = "/storage/emulated/0/Download/LocalTransfer"
                         prefs.edit().putString("save_dir", def).apply()
                         App.server.customSaveDir = def
-                        currentDir = def
+                        App.saveDirDisplay = def
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("恢复默认（Download/LocalTransfer）", fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(16.dp))
+                // 自动接收
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动接收文件", fontSize = 13.sp)
+                        Text("跳过确认直接保存", fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = App.autoReceive, onCheckedChange = { on ->
+                        App.autoReceive = on
+                        prefs.edit().putBoolean("auto_receive", on).apply()
+                    })
                 }
                 if (!hasAllFiles) {
                     Spacer(Modifier.height(8.dp))
@@ -638,10 +716,11 @@ fun DeviceRow(p: Peer, onClick: () -> Unit) {
     }
 }
 
-/** 添加设备：扫码 / 手动输入 */
+/** 添加设备：扫码 / 手动输入（IP + 端口分框） */
 @Composable
 fun AddDeviceDialog(onScan: () -> Unit, onManual: (String) -> Unit, onDismiss: () -> Unit) {
-    var addr by remember { mutableStateOf("") }
+    var ip by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("17878") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("添加设备", fontWeight = FontWeight.SemiBold) },
@@ -654,17 +733,31 @@ fun AddDeviceDialog(onScan: () -> Unit, onManual: (String) -> Unit, onDismiss: (
                     Text("扫码添加")
                 }
                 Spacer(Modifier.height(16.dp))
-                Text("方式二：手动输入地址", fontSize = 13.sp,
+                Text("方式二：手动输入", fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(addr, { addr = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("192.168.1.5 或 192.168.1.5:17878") },
-                    singleLine = true)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(ip, { ip = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("IP 地址", fontSize = 13.sp) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp))
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedTextField(port, { port = it },
+                        modifier = Modifier.width(96.dp),
+                        placeholder = { Text("端口", fontSize = 13.sp) },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp))
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = { if (addr.isNotBlank()) onManual(addr) }) {
+            TextButton(onClick = {
+                if (ip.isNotBlank()) {
+                    val p = port.trim().toIntOrNull() ?: 17878
+                    onManual(if (p == 17878) ip else "$ip:$p")
+                }
+            }) {
                 Text("连接")
             }
         },
@@ -759,9 +852,11 @@ fun ChatScreen(peerId: String) {
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
+            // 错误提示（进度走消息流卡片，不占标题区）
             App.sendStatus?.let {
-                Text(it, fontSize = 12.sp, color = Indigo,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+                Text(it, fontSize = 11.sp,
+                    color = androidx.compose.ui.graphics.Color(0xFFEF4444),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp))
             }
             LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp),
                 reverseLayout = false) {
