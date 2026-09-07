@@ -5,3 +5,5 @@ build/
 *.iml
 .android/
 .ios/
+android/keystore.properties
+android/app/localtransfer.jks
