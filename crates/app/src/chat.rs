@@ -242,58 +242,8 @@ impl RootView {
                         el.bg(cx.theme().muted_foreground).opacity(0.4)
                     }),
             )
-            // 弹性空隙：地址顶到最右
+            // 弹性空隙：地址顶到最右（传输进度只在消息流里，不占标题栏）
             .child(div().flex_1())
-            // 传输汇总（有进行中传输时才出现）
-            .when(active_count > 0, |el| {
-                el.child(
-                    h_flex()
-                        .id("transfer-summary")
-                        .flex_none()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "传输中 {active_count} · {:.0}%",
-                                    active_frac * 100.0
-                                )),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(px(64.))
-                                .child(
-                                    Progress::new("hdr-progress")
-                                        .value((active_frac * 100.0) as f32)
-                                        .xsmall(),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(cx.theme().primary)
-                                .child(fmt_speed(active_speed)),
-                        ),
-                )
-                .child(
-                    Button::new("btn-cancel-all")
-                        .label("取消")
-                        .ghost()
-                        .small()
-                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                            for id in &cancel_ids {
-                                let _ = this.core.send(UiCommand::CancelTransfer {
-                                    transfer_id: id.clone(),
-                                });
-                            }
-                            cx.notify();
-                        })),
-                )
-            })
             // 地址（最右）：点击复制
             .child(
                 div()

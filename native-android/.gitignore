@@ -6,3 +6,4 @@ localtransfer.jks
 *.jks
 SIGNING.md
 .gradle/
+app/localtransfer.jks

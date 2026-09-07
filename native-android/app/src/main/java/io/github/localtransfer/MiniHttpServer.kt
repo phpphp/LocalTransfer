@@ -308,9 +308,15 @@ class MiniHttpServer(
         if (written == 0L && declared > 0) return Resp.err(400, "空内容")
 
         val (uri, path) = publishToDownloads(f, rel)
+        // 转存失败（uri 和 path 都空）→ 用缓存路径兜底（至少能打开）
+        val (finalUri, finalPath) = if (uri == null && path == null) {
+            null to f.absolutePath
+        } else {
+            uri to path
+        }
         sess.done.add(ReceivedFile(
             if (rel.contains('/')) rel.substring(rel.indexOf('/') + 1) else rel,
-            written, uri, path))
+            written, finalUri, finalPath))
         sess.completed++
         if (sess.completed >= sess.files.size) {
             sessions.remove(token)
@@ -320,7 +326,9 @@ class MiniHttpServer(
         return Resp.ok()
     }
 
-    /** 复制进公共下载目录（Download/LocalTransfer/...），返回 (uri, 真实路径) */
+    /** 复制进公共下载目录（Download/LocalTransfer/...）。
+     *  返回 (uri, 真实路径)；失败时把错误打进日志并把源文件留在原地
+     *  （返回 null 对——调用方用 cacheDir 路径兜底打开）。 */
     private fun publishToDownloads(src: File, rel: String): Pair<String?, String?> {
         val segs = rel.split('/').filter { it.isNotEmpty() && it != ".." }
         val display = segs.lastOrNull() ?: src.name
@@ -332,13 +340,19 @@ class MiniHttpServer(
                     put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
                     put(MediaStore.Downloads.RELATIVE_PATH,
                         "Download/LocalTransfer" + if (sub.isNotEmpty()) "/$sub" else "")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
                 val uri = context.contentResolver.insert(
                     MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: return null to null
+                    ?: throw IllegalStateException("MediaStore insert 返回 null")
                 context.contentResolver.openOutputStream(uri)?.use { o ->
                     src.inputStream().use { it.copyTo(o) }
+                } ?: throw IllegalStateException("openOutputStream 失败")
+                // 写完清 pending 标记，文件立即可见
+                val done = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
                 }
+                context.contentResolver.update(uri, done, null, null)
                 val p = context.contentResolver.query(uri,
                     arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
                     if (c.moveToFirst()) c.getString(0) else null }
@@ -354,7 +368,10 @@ class MiniHttpServer(
                 src.copyTo(dst, overwrite = true); src.delete()
                 null to dst.absolutePath
             }
-        } catch (_: Exception) { null to null }
+        } catch (e: Exception) {
+            android.util.Log.w("LocalTransfer", "转存下载目录失败: ${e.message}", e)
+            null to null
+        }
     }
 }
 
