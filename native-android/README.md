@@ -39,3 +39,25 @@ gradle wrapper 未包含（复用全局 gradle 或 `gradle wrapper` 生成）。
 - UI 用 Compose Material3（深色主题固定 indigo 主色）
 - HTTP 服务是手写的迷你实现（Flutter 用 shelf），路由语义一致
 - 文件选择用系统 `GetMultipleContents`（无需 file_picker 插件）
+
+## 签名打包
+
+```bash
+# 1) 构建
+gradle :app:assembleRelease
+# 2) 对齐
+$ANDROID_HOME/build-tools/36.0.0/zipalign -f 4 \
+  app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+# 3) 签名（当前用 debug keystore；正式发布请生成自有 keystore 替换）
+$ANDROID_HOME/build-tools/36.0.0/apksigner sign \
+  --ks ~/.android/debug.keystore --ks-pass pass:android \
+  --ks-key-alias androiddebugkey --key-pass pass:android \
+  --out app-release-signed.apk aligned.apk
+```
+
+正式发布签名（自建 keystore，妥善保管，丢失则无法覆盖升级）：
+
+```bash
+keytool -genkey -v -keystore localtransfer.jks -alias localtransfer \
+  -keyalg RSA -keysize 2048 -validity 10000
+```
