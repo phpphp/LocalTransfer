@@ -2,7 +2,14 @@ package io.github.localtransfer
 
 import android.content.Context
 import android.net.wifi.WifiManager
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
@@ -46,18 +53,24 @@ class Discovery(private val me: DeviceInfo, context: Context) {
                 setReferenceCounted(false); acquire()
             }
         } catch (_: Exception) {}
-        scope.launch {
-            runCatching { loop(port) }
-            runCatching { announceLoop() }
-        }
-        scope.launch { subnetScanLoop() }
-        scope.launch { keepaliveLoop() }
+        // 各循环独立协程——之前 loop 排在 announceLoop 前面顺序执行，
+        // loop 的 receive() 永远阻塞 → announce 从未发过（手机对电脑不可见的根因）
+        scope.launch { runCatching { bindAndLoop() } }
+        scope.launch { while (true) { runCatching { announce() }; delay(5000) } }
+        scope.launch { while (true) { runCatching { subnetScan() }; delay(45_000) } }
+        scope.launch { while (true) { runCatching { keepalive() }; delay(6000) } }
     }
 
-    private fun loop(port: Int) {
-        val s = MulticastSocket(DISCOVERY_PORT)
-        s.reuseAddress = true
-        runCatching { s.joinGroup(InetSocketAddress(InetAddress.getByName(DISCOVERY_GROUP), 0), null) }
+    // MARK: UDP 收发
+
+    private fun bindAndLoop() {
+        // reuseAddress 必须在 bind 之前：传 null 构造未绑定 socket，设好选项再 bind
+        val s = MulticastSocket(null as java.net.SocketAddress?)
+        runCatching { s.reuseAddress = true }
+        s.broadcast = true
+        s.bind(java.net.InetSocketAddress(DISCOVERY_PORT))
+        @Suppress("DEPRECATION")
+        runCatching { s.joinGroup(InetAddress.getByName(DISCOVERY_GROUP)) }
         sock = s
         val buf = ByteArray(2048)
         while (true) {
@@ -65,55 +78,54 @@ class Discovery(private val me: DeviceInfo, context: Context) {
             s.receive(pkt)
             val raw = String(pkt.data, 0, pkt.length, Charsets.UTF_8)
             val j = runCatching { JSONObject(raw) }.getOrNull() ?: continue
-            when (j.optString("t")) {
-                "announce" -> {
-                    val info = runCatching { DeviceInfo.fromJson(j) }.getOrNull() ?: continue
-                    if (info.id == me.id || info.v != PROTOCOL_VERSION) continue
-                    val existing = _peers.value[info.id]
-                    _peers.value = _peers.value + (info.id to Peer(info, pkt.address))
-                    // 单播回（2s 节流，防互回风暴）
-                    val now = System.currentTimeMillis()
-                    if (now - (lastUnicastReply[info.id] ?: 0L) >= 2000) {
-                        lastUnicastReply[info.id] = now
-                        runCatching {
-                            s.send(DatagramPacket(me.toAnnounce(), me.toAnnounce().size,
-                                pkt.address, DISCOVERY_PORT))
-                        }
+            handle(j, pkt.address, s)
+        }
+    }
+
+    private fun handle(j: JSONObject, from: InetAddress, s: MulticastSocket) {
+        when (j.optString("t")) {
+            "announce" -> {
+                val info = runCatching { DeviceInfo.fromJson(j) }.getOrNull() ?: return
+                if (info.id == me.id || info.v != PROTOCOL_VERSION) return
+                val manual = manualIps.contains(from.hostAddress) ||
+                        _peers.value[info.id]?.manual == true
+                _peers.value = _peers.value +
+                        (info.id to Peer(info, from, manual))
+                // 单播回（2s 节流，防互回风暴）
+                val now = System.currentTimeMillis()
+                if (now - (lastUnicastReply[info.id] ?: 0L) >= 2000) {
+                    lastUnicastReply[info.id] = now
+                    val data = me.toAnnounce()
+                    runCatching {
+                        s.send(DatagramPacket(data, data.size, from, DISCOVERY_PORT))
                     }
-                    if (existing == null || existing.info != info) _peers.value = _peers.value
                 }
-                "bye" -> {
-                    val id = j.optString("id")
-                    if (id.isNotEmpty()) _peers.value = _peers.value - id
-                }
+            }
+            "bye" -> {
+                val id = j.optString("id")
+                if (id.isNotEmpty()) _peers.value = _peers.value - id
             }
         }
     }
 
-    private suspend fun announceLoop() {
-        while (true) {
-            sendAnnounce()
-            delay(5000)
-        }
-    }
-
-    private fun sendAnnounce() {
+    private fun announce() {
         val s = sock ?: return
         val data = me.toAnnounce()
-        runCatching { s.send(DatagramPacket(data, data.size,
-            InetAddress.getByName(DISCOVERY_GROUP), DISCOVERY_PORT)) }
-        runCatching { s.broadcast = true; s.send(DatagramPacket(data, data.size,
-            InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT)) }
-    }
-
-    /** 网段扫描：探测 /24 上 17878/17879 的 /api/info */
-    private suspend fun subnetScanLoop() {
-        while (true) {
-            runCatching { subnetScan() }
-            delay(45_000)
+        // 多播
+        runCatching {
+            s.send(DatagramPacket(data, data.size,
+                InetAddress.getByName(DISCOVERY_GROUP), DISCOVERY_PORT))
+        }
+        // 广播兜底
+        runCatching {
+            s.send(DatagramPacket(data, data.size,
+                InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
         }
     }
 
+    // MARK: TCP 兜底
+
+    /** 网段扫描：探测 /24 上 17878/17879 的 /api/info */
     private suspend fun subnetScan() = coroutineScope {
         val own = myLanIp() ?: return@coroutineScope
         val dot = own.lastIndexOf('.')
@@ -121,57 +133,58 @@ class Discovery(private val me: DeviceInfo, context: Context) {
         val prefix = own.substring(0, dot)
         (1..254).map { i ->
             launch(Dispatchers.IO) {
-                probe("$prefix.$i", DEFAULT_HTTP_PORT, addNew = true)
-                probe("$prefix.$i", DEFAULT_HTTP_PORT + 1, addNew = true)
+                httpProbe("$prefix.$i", DEFAULT_HTTP_PORT, addNew = true)
+                httpProbe("$prefix.$i", DEFAULT_HTTP_PORT + 1, addNew = true)
             }
         }.joinAll()
     }
 
-    private fun keepaliveLoop() = scope.launch {
-        while (true) {
-            _peers.value.values.forEach { p -> probe(p.addr.hostAddress, p.info.port, addNew = false) }
-            delay(6000)
+    private fun keepalive() {
+        _peers.value.values.forEach { p ->
+            httpProbe(p.addr.hostAddress ?: return@forEach, p.info.port, addNew = false)
         }
     }
 
-    /** HTTP 探测：addNew=true 时未知设备入表；否则只刷新 lastSeen */
-    private fun probe(ip: String, port: Int, addNew: Boolean): Boolean =
-        httpProbe(ip, port, addNew)
-
-    fun manualIpsSnapshot(): Set<String> = manualIps.toSet()
-
+    /** HTTP 探测 /api/info；addNew=true 时未知设备也入表；否则只刷新已知设备 */
     private fun httpProbe(ip: String, port: Int, addNew: Boolean): Boolean {
         return try {
             val conn = java.net.URL("http://$ip:$port/api/info")
                 .openConnection() as java.net.HttpURLConnection
-            conn.connectTimeout = 600
-            conn.readTimeout = 600
+            conn.connectTimeout = 800
+            conn.readTimeout = 800
             if (conn.responseCode != 200) { conn.disconnect(); return false }
-            val info = DeviceInfo.fromJson(JSONObject(conn.inputStream.readBytes().toString(Charsets.UTF_8)))
+            val info = DeviceInfo.fromJson(
+                JSONObject(conn.inputStream.readBytes().toString(Charsets.UTF_8)))
             conn.disconnect()
             if (info.id == me.id) return false
             val cur = _peers.value
             if (!addNew && !cur.containsKey(info.id)) return false
-            _peers.value = cur + (info.id to Peer(info, InetAddress.getByName(ip),
-                manual = manualIps.contains(info.id) || cur[info.id]?.manual == true))
+            val manual = manualIps.contains(ip) || cur[info.id]?.manual == true
+            _peers.value = cur + (info.id to
+                    Peer(info, InetAddress.getByName(ip), manual))
             true
         } catch (_: Exception) { false }
     }
 
-    /** 手动添加（持久化集合由调用方写入 prefs） */
+    /** 手动添加（persisted=true 时记入持久化集合） */
     fun addManual(ip: String, persisted: Boolean) {
         manualIps += ip
         httpProbe(ip, DEFAULT_HTTP_PORT, addNew = true)
+        httpProbe(ip, DEFAULT_HTTP_PORT + 1, addNew = true)
     }
 
     fun restoreManual(list: List<String>) { manualIps.addAll(list) }
+    fun manualIpsSnapshot(): Set<String> = manualIps.toSet()
 
     fun shutdown() {
         runCatching {
             sock?.let { s ->
-                val bye = JSONObject().put("t", "bye").put("id", me.id).toString().toByteArray()
-                s.send(DatagramPacket(bye, bye.size, InetAddress.getByName(DISCOVERY_GROUP), DISCOVERY_PORT))
-                s.send(DatagramPacket(bye, bye.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
+                val bye = JSONObject().put("t", "bye").put("id", me.id)
+                    .toString().toByteArray()
+                s.send(DatagramPacket(bye, bye.size,
+                    InetAddress.getByName(DISCOVERY_GROUP), DISCOVERY_PORT))
+                s.send(DatagramPacket(bye, bye.size,
+                    InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
             }
         }
         scope.cancel()
@@ -180,13 +193,19 @@ class Discovery(private val me: DeviceInfo, context: Context) {
     }
 
     companion object {
+        /** getifaddrs 语义：第一个非环回 IPv4（优先私网段） */
         fun myLanIp(): String? = runCatching {
             NetworkInterface.getNetworkInterfaces().asSequence()
                 .filter { it.isUp && !it.isLoopback }
                 .flatMap { it.inetAddresses.asSequence() }
                 .filter { it is java.net.Inet4Address }
                 .map { it.hostAddress!! }
-                .firstOrNull { it.startsWith("192.168.") || it.startsWith("10.") || it.startsWith("172.") }
+                .firstOrNull { it.startsWith("192.168.") || it.startsWith("10.") }
+                ?: NetworkInterface.getNetworkInterfaces().asSequence()
+                    .filter { it.isUp && !it.isLoopback }
+                    .flatMap { it.inetAddresses.asSequence() }
+                    .filter { it is java.net.Inet4Address && !it.isLoopbackAddress }
+                    .firstOrNull()?.hostAddress
         }.getOrNull()
     }
 }

@@ -13,21 +13,28 @@ import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.lifecycleScope
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -232,21 +239,24 @@ object App {
     }
 }
 
+private val Indigo = androidx.compose.ui.graphics.Color(0xFF6366F1)
+private val IndigoDark = androidx.compose.ui.graphics.Color(0xFF4F46E5)
+
 @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
-    val ctx = LocalContext.current
-    MaterialTheme(colorScheme = darkColorScheme(
-        primary = androidx.compose.ui.graphics.Color(0xFF6366F1))) {
+    MaterialTheme(colorScheme = darkColorScheme(primary = Indigo)) {
         val peerId = App.currentPeer
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
         App.pendingReq?.let { req ->
             AlertDialog(
                 onDismissRequest = { },
-                title = { Text("${req.peer.name} 想发送文件") },
+                title = { Text("${req.peer.name} 想发送文件",
+                    fontWeight = FontWeight.SemiBold) },
                 text = { Text("${req.files.size} 个文件 · " +
-                        fmtSize(req.files.sumOf { it.size })) },
+                        fmtSize(req.files.sumOf { it.size }),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant) },
                 confirmButton = { TextButton(onClick = {
                     req.decision.complete(true); App.pendingReq = null
                 }) { Text("接收") } },
@@ -258,6 +268,8 @@ fun App() {
     }
 }
 
+// ---------------------------------------------------------------- 设备列表
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceListScreen() {
@@ -267,41 +279,167 @@ fun DeviceListScreen() {
     val online = peers.values.filter {
         it.manual || System.currentTimeMillis() - it.lastSeen < DEVICE_TIMEOUT_MS
     }.sortedBy { it.info.name }
+
+    var showAdd by remember { mutableStateOf(false) }
+    var showQr by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text(App.me.name) }, actions = {
-                IconButton(onClick = { activity?.startScan() }) {
-                    Text("＋", fontSize = 22.sp)
-                }
-            })
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(App.me.name, fontWeight = FontWeight.SemiBold)
+                        Text("LocalTransfer", fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                },
+                actions = {
+                    // 本机二维码
+                    IconButton(onClick = { showQr = true }) {
+                        Text("▦", fontSize = 18.sp)
+                    }
+                    // 添加设备
+                    IconButton(onClick = { showAdd = true }) {
+                        Text("＋", fontSize = 22.sp)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface),
+            )
         },
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
-            if (online.isEmpty()) {
-                Box(Modifier.weight(1f).fillMaxWidth(),
-                    contentAlignment = Alignment.Center) {
-                    Text("等待设备上线…",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                LazyColumn(Modifier.weight(1f)) {
-                    items(online, key = { it.info.id }) { p ->
-                        ListItem(
-                            headlineContent = { Text(p.info.name) },
-                            supportingContent = {
-                                Text("${p.info.plat} · ${p.addr.hostAddress}:" +
-                                        p.info.port, fontSize = 12.sp)
-                            },
-                            modifier = Modifier.clickable {
-                                App.currentPeer = p.info.id
-                            },
-                        )
-                    }
+        if (online.isEmpty()) {
+            Column(
+                Modifier.fillMaxSize().padding(pad),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text("⌕", fontSize = 44.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                Text("等待设备上线…",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("同一局域网自动发现 · 或点 ＋ 手动添加",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+                items(online, key = { it.info.id }) { p ->
+                    DeviceRow(p) { App.currentPeer = p.info.id }
+                    HorizontalDivider(color = MaterialTheme.colorScheme
+                        .surfaceVariant.copy(alpha = 0.4f))
                 }
             }
         }
     }
+
+    if (showAdd) AddDeviceDialog(
+        onScan = { activity?.startScan(); showAdd = false },
+        onManual = { App.addManual(it); showAdd = false },
+        onDismiss = { showAdd = false },
+    )
+    if (showQr) MyQrDialog(onDismiss = { showQr = false })
 }
+
+@Composable
+fun DeviceRow(p: Peer, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 首字头像
+        Box(
+            Modifier.size(42.dp).clip(CircleShape)
+                .background(Indigo.copy(alpha = 0.18f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(p.info.name.take(1), color = Indigo,
+                fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(p.info.name, fontWeight = FontWeight.Medium)
+            Text("${p.info.plat} · ${p.addr.hostAddress}:${p.info.port}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        // 在线点 + 手动标记
+        if (p.manual) {
+            Text("手动", fontSize = 10.sp, color = MaterialTheme.colorScheme
+                .onSurfaceVariant,
+                modifier = Modifier.border(0.5.dp, MaterialTheme.colorScheme
+                    .onSurfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 5.dp, vertical = 1.dp))
+            Spacer(Modifier.width(8.dp))
+        }
+        Box(Modifier.size(8.dp).clip(CircleShape)
+            .background(androidx.compose.ui.graphics.Color(0xFF22C55E)))
+    }
+}
+
+/** 添加设备：扫码 / 手动输入 */
+@Composable
+fun AddDeviceDialog(onScan: () -> Unit, onManual: (String) -> Unit, onDismiss: () -> Unit) {
+    var addr by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加设备", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Text("方式一：电脑端点侧栏二维码，手机扫码", fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                    Text("扫码添加")
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("方式二：手动输入地址", fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(addr, { addr = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("192.168.1.5 或 192.168.1.5:17878") },
+                    singleLine = true)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { if (addr.isNotBlank()) onManual(addr) }) {
+                Text("连接")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/** 本机二维码（其他设备扫码添加本机） */
+@Composable
+fun MyQrDialog(onDismiss: () -> Unit) {
+    val ip = remember { Discovery.myLanIp() ?: "127.0.0.1" }
+    val content = "http://$ip:${App.me.port}"
+    val bmp = remember(content) { MainActivity.qrBitmap(content) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("本机二维码", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()) {
+                if (bmp != null) {
+                    Image(bmp.asImageBitmap(), null,
+                        Modifier.size(220.dp).background(androidx.compose.ui.graphics.Color.White)
+                            .padding(10.dp).clip(RoundedCornerShape(12.dp)))
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(content, fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+// ---------------------------------------------------------------- 会话
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -318,39 +456,64 @@ fun ChatScreen(peerId: String) {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(peer?.info?.name ?: "设备", fontSize = 16.sp)
-                        Text(if (peer != null) "在线" else "离线", fontSize = 12.sp,
-                            color = if (peer != null) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(34.dp).clip(CircleShape)
+                            .background(Indigo.copy(alpha = 0.18f)),
+                            contentAlignment = Alignment.Center) {
+                            Text((peer?.info?.name ?: "?").take(1),
+                                color = Indigo, fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(peer?.info?.name ?: "设备",
+                                fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(6.dp).clip(CircleShape)
+                                    .background(if (peer != null)
+                                        androidx.compose.ui.graphics.Color(0xFF22C55E)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant))
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (peer != null) "在线" else "离线",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 },
                 navigationIcon = {
-                    TextButton(onClick = { App.currentPeer = null }) { Text("←") }
+                    TextButton(onClick = { App.currentPeer = null }) {
+                        Text("←", fontSize = 18.sp)
+                    }
                 },
             )
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().imePadding()) {
             App.sendStatus?.let {
-                Text(it, fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 12.dp))
+                Text(it, fontSize = 12.sp, color = Indigo,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
             }
-            LazyColumn(Modifier.weight(1f).padding(8.dp)) {
+            LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp),
+                reverseLayout = false) {
                 items(msgs.size + progresses.size) { i ->
                     if (i < msgs.size) MessageBubble(msgs[i])
                     else ProgressCard(progresses[i - msgs.size])
                 }
             }
-            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { activity?.pick() }) { Text("📎") }
+            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { activity?.pick() },
+                    contentPadding = PaddingValues(12.dp)) { Text("📎") }
                 Spacer(Modifier.width(8.dp))
                 OutlinedTextField(input, { input = it }, Modifier.weight(1f),
-                    placeholder = { Text("输入消息") }, maxLines = 4)
+                    placeholder = { Text("输入消息") }, maxLines = 4,
+                    shape = RoundedCornerShape(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = {
                     if (input.isNotBlank()) { App.sendText(peerId, input); input = "" }
-                }) { Text("发送") }
+                }, contentPadding = PaddingValues(horizontal = 16.dp)) {
+                    Text("发送")
+                }
             }
         }
     }
@@ -363,14 +526,17 @@ fun MessageBubble(e: ChatEntry) {
     Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
         contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = if (end) MaterialTheme.colorScheme.primary
+            shape = RoundedCornerShape(
+                topStart = 16.dp, topEnd = 16.dp,
+                bottomStart = if (end) 16.dp else 4.dp,
+                bottomEnd = if (end) 4.dp else 16.dp),
+            color = if (end) IndigoDark
             else MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            Column(Modifier.padding(10.dp).widthIn(max = 280.dp)) {
+            Column(Modifier.padding(12.dp).widthIn(max = 280.dp)) {
                 when (e) {
                     is ChatEntry.Text -> Text(e.text,
-                        color = if (end) MaterialTheme.colorScheme.onPrimary
+                        color = if (end) androidx.compose.ui.graphics.Color.White
                         else MaterialTheme.colorScheme.onSurface)
                     is ChatEntry.FileCard -> Column(
                         Modifier.clickable {
@@ -379,16 +545,23 @@ fun MessageBubble(e: ChatEntry) {
                             }
                         }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (e.files.size > 1 || e.files.isEmpty()) "📁" else "📄")
-                            Spacer(Modifier.width(6.dp))
-                            Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(if (e.files.size > 1 || e.files.isEmpty()) "📁" else "📄",
+                                fontSize = 18.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.Medium,
+                                color = if (end) androidx.compose.ui.graphics.Color.White
+                                else MaterialTheme.colorScheme.onSurface)
                         }
                         e.location?.let {
-                            Text(it, fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(it, fontSize = 10.sp, color =
+                                if (end) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text("${fmtSize(e.size)} · 点击打开", fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            color = if (end)
+                                androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f)
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     is ChatEntry.SendProgress -> {}
                 }
@@ -399,21 +572,32 @@ fun MessageBubble(e: ChatEntry) {
 
 @Composable
 fun ProgressCard(p: RecvProgress) {
-    Surface(shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.padding(10.dp).widthIn(max = 280.dp)) {
-            Row {
-                Text("📁 ${p.label}")
-                Text("（${p.fileIdx + 1}/${p.fileCount}）", fontSize = 11.sp)
+    Surface(
+        shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Column(Modifier.padding(12.dp).widthIn(max = 280.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("📁", fontSize = 18.sp)
+                Spacer(Modifier.width(8.dp))
+                Text(p.label, fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("  ${p.fileIdx + 1}/${p.fileCount}", fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            Spacer(Modifier.height(6.dp))
             val frac = if (p.total > 0) p.transferred.toFloat() / p.total else 0f
             Text("接收中 ${(frac * 100).toInt()}% · " +
                     "${fmtSize(p.transferred)} / ${fmtSize(p.total)}",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(6.dp))
-            LinearProgressIndicator(progress = { frac },
-                modifier = Modifier.fillMaxWidth())
+            LinearProgressIndicator(
+                progress = { frac },
+                modifier = Modifier.fillMaxWidth().height(5.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = Indigo,
+            )
         }
     }
 }
