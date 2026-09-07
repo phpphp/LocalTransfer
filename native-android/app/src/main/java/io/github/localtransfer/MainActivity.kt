@@ -173,6 +173,7 @@ object App {
             }
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
+        server.setIdentity(me)   // /api/info 返回带真实端口的身份
         disc = Discovery(me, ctx)
         disc.restoreManual(prefs.getStringSet("manual_peers", emptySet())?.toList()
             ?: emptyList())

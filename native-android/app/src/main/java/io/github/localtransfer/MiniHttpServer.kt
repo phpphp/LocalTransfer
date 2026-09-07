@@ -9,6 +9,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 import java.net.ServerSocket
@@ -44,12 +45,86 @@ private class Resp(val code: Int, val body: ByteArray = ByteArray(0),
 }
 
 /**
+ * 请求体读取器：同时支持 Content-Length 定长与 Transfer-Encoding: chunked。
+ *
+ * 桌面端 reqwest 的流式上传（Body::wrap(StreamBody)）用 chunked 编码
+ * 【没有 Content-Length 头】——只按 content-length 读会得到 0 字节并立即
+ * 响应关连接，客户端还在写 → 对端报"网络错误"（0B 文件的根因）。
+ */
+private class BodyReader(private val input: InputStream,
+                         headers: Map<String, String>) {
+    private val chunked =
+        headers["transfer-encoding"]?.contains("chunked", ignoreCase = true) == true
+    private var fixedRemaining: Long =
+        headers["content-length"]?.toLongOrNull() ?: 0L
+    // chunked 状态
+    private var chunkRemaining = 0L
+    private var done = false
+
+    /** 读一段 body 到 buf，返回字节数（0 = 结束，-1 = 出错） */
+    fun read(buf: ByteArray): Int {
+        if (done) return 0
+        if (!chunked) {
+            if (fixedRemaining <= 0) { done = true; return 0 }
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), fixedRemaining).toInt())
+            if (n < 0) { done = true; return 0 }
+            fixedRemaining -= n
+            if (fixedRemaining <= 0) done = true
+            return n
+        }
+        // chunked：当前块读完 → 读下一块的 size 行
+        if (chunkRemaining <= 0) {
+            if (!nextChunk()) return 0
+        }
+        val n = input.read(buf, 0, minOf(buf.size.toLong(), chunkRemaining).toInt())
+        if (n < 0) { done = true; return -1 }
+        chunkRemaining -= n
+        if (chunkRemaining <= 0) readCrLf()   // 块尾 CRLF
+        return n
+    }
+
+    /** 读下一块头；终止块（size=0）后吞掉 trailer 直到空行 */
+    private fun nextChunk(): Boolean {
+        val sizeLine = readLine(input) ?: return false
+        val hex = sizeLine.substringBefore(';').trim()
+        val size = hex.toLongOrNull(16) ?: return false
+        if (size == 0L) {
+            // trailer 节（可为空）：连续读到空行
+            while (true) {
+                val t = readLine(input) ?: break
+                if (t.isEmpty()) break
+            }
+            done = true
+            return false
+        }
+        chunkRemaining = size
+        return true
+    }
+
+    private fun readCrLf() {
+        if (input.read() == '\r'.code) input.read()  // \n
+    }
+
+    /** 读完整个 body（用于 JSON 请求体） */
+    fun readAll(): ByteArray? {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        while (true) {
+            val n = read(buf)
+            if (n <= 0) break
+            out.write(buf, 0, n)
+        }
+        return if (chunked || fixedRemaining >= 0) out.toByteArray() else null
+    }
+}
+
+/**
  * 极简 HTTP/1.1 服务（路由与桌面端 axum 对齐）。
- * 手写解析：请求行 + 头 + Content-Length 请求体；连接一问一答后关闭。
+ * 手写解析：请求行 + 头 + 请求体（定长 / chunked）；一问一答后关闭。
  * 回调统一切到主线程（Compose 状态只能在主线程写）。
  */
 class MiniHttpServer(
-    private val me: DeviceInfo,
+    me: DeviceInfo,
     private val context: Context,
     private val callbacks: Callbacks,
 ) {
@@ -65,7 +140,12 @@ class MiniHttpServer(
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var running = true
 
+    @Volatile private var identity: DeviceInfo = me
+
     val port: Int get() = server?.localPort ?: 0
+
+    /** 端口确定后回填身份（/api/info 返回它；构造时 port 还是 0） */
+    fun setIdentity(info: DeviceInfo) { identity = info }
 
     fun start(fromPort: Int): Int {
         var p = fromPort
@@ -95,8 +175,10 @@ class MiniHttpServer(
 
     private class Req(
         val method: String, val path: String,
-        val headers: Map<String, String>, val body: InputStream,
-    )
+        val headers: Map<String, String>, val body: BodyReader,
+    ) {
+        fun readBody(): ByteArray? = body.readAll()
+    }
 
     private fun handle(s: Socket) {
         runCatching {
@@ -113,7 +195,7 @@ class MiniHttpServer(
                 if (i > 0) headers[line.substring(0, i).trim().lowercase()] =
                     line.substring(i + 1).trim()
             }
-            val req = Req(parts[0], parts[1], headers, input)
+            val req = Req(parts[0], parts[1], headers, BodyReader(input, headers))
             val resp = route(req)
             val out = s.getOutputStream()
             val head = buildString {
@@ -130,13 +212,14 @@ class MiniHttpServer(
     private fun route(req: Req): Resp = try {
         when {
             req.method == "GET" && req.path == "/api/info" ->
-                Resp.okJson(me.toJson().toString())
+                Resp.okJson(identity.toJson().toString())
 
             req.method == "POST" && req.path == "/api/message" -> {
-                val j = JSONObject(req.body.readBytes().toString(Charsets.UTF_8))
+                val j = JSONObject(String(req.readBody() ?: return Resp.err(400, "body"),
+                    Charsets.UTF_8))
                 val sender = DeviceInfo.fromJson(j.getJSONObject("sender"))
                 val text = j.optString("text").trim()
-                if (text.isEmpty() || sender.id == me.id) Resp.err(400, "无效消息")
+                if (text.isEmpty() || sender.id == identity.id) Resp.err(400, "无效消息")
                 else {
                     main.post { callbacks.onMessage(sender.id, sender.name, text) }
                     Resp.ok()
@@ -164,9 +247,10 @@ class MiniHttpServer(
     }
 
     private fun prepare(req: Req): Resp {
-        val j = JSONObject(req.body.readBytes().toString(Charsets.UTF_8))
+        val j = JSONObject(String(req.readBody() ?: return Resp.err(400, "body"),
+            Charsets.UTF_8))
         val sender = DeviceInfo.fromJson(j.getJSONObject("sender"))
-        if (sender.id == me.id) return Resp.err(400, "自己传自己？")
+        if (sender.id == identity.id) return Resp.err(400, "自己传自己？")
         val arr: JSONArray = j.getJSONArray("files")
         val files = (0 until arr.length()).map {
             val f = arr.getJSONObject(it)
@@ -197,26 +281,31 @@ class MiniHttpServer(
         val f = File(sess.saveDir, if (segs.isEmpty()) meta.name else segs.joinToString("/"))
         f.parentFile?.mkdirs()
 
-        val len = req.headers["content-length"]?.toLongOrNull() ?: 0
+        // 声明大小（进度分母）：chunked 时没有 Content-Length，用 meta.size
+        val declared = meta.size
         val label = if (rel.contains('/')) rel.substring(0, rel.indexOf('/')) else rel
         var written = 0L
         val buf = ByteArray(64 * 1024)
         val out = f.outputStream()
         try {
-            var remain = len
-            while (remain > 0) {
-                val n = req.body.read(buf, 0, minOf(buf.size.toLong(), remain).toInt())
+            while (true) {
+                val n = req.body.read(buf)
                 if (n <= 0) break
-                out.write(buf, 0, n); written += n; remain -= n
+                out.write(buf, 0, n)
+                written += n
                 val w = written
                 main.post {
                     callbacks.onProgress(token, RecvProgress(
-                        sess.peerId, label, sess.completed, sess.files.size, w, len))
+                        sess.peerId, label, sess.completed, sess.files.size,
+                        w, declared))
                 }
             }
         } finally { runCatching { out.flush(); out.close() } }
 
-        if (written != len) return Resp.err(400, "大小不符")
+        // 定长模式校验大小；chunked 以实际收到为准（>0 即有效）
+        val hasLen = req.headers.containsKey("content-length")
+        if (hasLen && written != declared) return Resp.err(400, "大小不符")
+        if (written == 0L && declared > 0) return Resp.err(400, "空内容")
 
         val (uri, path) = publishToDownloads(f, rel)
         sess.done.add(ReceivedFile(
