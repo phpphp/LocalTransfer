@@ -1,6 +1,7 @@
 package io.github.localtransfer
 
 import org.json.JSONObject
+import java.util.UUID
 
 const val PROTOCOL_VERSION = 1
 const val DISCOVERY_GROUP = "239.192.71.82"
@@ -81,4 +82,27 @@ fun fmtSize(bytes: Long): String {
     var v = bytes.toDouble(); var i = 0
     while (v >= 1024 && i < 4) { v /= 1024; i++ }
     return if (i == 0) "$bytes B" else String.format("%.1f %s", v, u[i])
+}
+
+// ---------------------------------------------------------------- 随机诗意名（与桌面端 store.rs 同词表）
+
+private val POETIC_ADJ = arrayOf(
+    "温柔的", "安静的", "快乐的", "勇敢的", "自由的", "神秘的", "优雅的", "活泼的",
+    "沉静的", "明亮的", "柔软的", "轻盈的", "悠然的", "清澈的", "可爱的", "狡黠的",
+    "坦率的", "浪漫的", "顽皮的", "认真的", "热烈的", "朦胧的", "顺风的", "发光的",
+    "微笑的", "好奇的", "懒洋洋的", "慢悠悠的", "亮晶晶的", "毛茸茸的", "圆滚滚的", "慢半拍的",
+)
+private val POETIC_NOUN = arrayOf(
+    "山雀", "鲸鱼", "萤火", "松鼠", "云雀", "海豚", "月光", "星河", "芦苇", "清泉",
+    "晚风", "候鸟", "竹叶", "雪花", "灯塔", "小熊", "旅人", "橘猫", "白鹭", "远山",
+    "湖泊", "松果", "蒲公英", "布谷鸟", "小雨滴", "贝壳", "枫叶", "流星", "麦浪",
+    "溪水", "云朵", "海风",
+)
+
+/** 随机诗意设备名（形容词 + 的 + 自然意象，与桌面端同词表同逻辑） */
+fun randomPoeticName(): String {
+    val b = UUID.randomUUID().toString().replace("-", "")
+    val adjIdx = b.substring(0, 2).toInt(16) % POETIC_ADJ.size
+    val nounIdx = b.substring(2, 4).toInt(16) % POETIC_NOUN.size
+    return POETIC_ADJ[adjIdx] + POETIC_NOUN[nounIdx]
 }

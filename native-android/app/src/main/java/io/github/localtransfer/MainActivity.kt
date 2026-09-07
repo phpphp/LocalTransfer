@@ -24,6 +24,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -145,7 +152,7 @@ object App {
             prefs.edit().putString("device_id", id).apply()
         }
         val name = prefs.getString("device_name", null)
-            ?: "手机-${id.take(4)}".also { prefs.edit().putString("device_name", it).apply() }
+            ?: randomPoeticName().also { prefs.edit().putString("device_name", it).apply() }
         me = DeviceInfo(id, name, "android", 0)
         api = TransferApi(me)
         server = MiniHttpServer(me, ctx, object : MiniHttpServer.Callbacks {
@@ -170,6 +177,15 @@ object App {
         disc.restoreManual(prefs.getStringSet("manual_peers", emptySet())?.toList()
             ?: emptyList())
         disc.start(me.port)
+    }
+
+    /** 改名：立即生效并持久化（下一条 announce 即携带新名） */
+    fun renameDevice(newName: String) {
+        val n = newName.trim()
+        if (n.isEmpty()) return
+        me = me.copy(name = n)
+        ctx.getSharedPreferences("lt", Context.MODE_PRIVATE)
+            .edit().putString("device_name", n).apply()
     }
 
     fun addManual(addr: String) {
@@ -276,31 +292,34 @@ fun DeviceListScreen() {
     val ctx = LocalContext.current
     val activity = ctx as? MainActivity
     val peers by App.peers.collectAsState()
+    val udp by App.disc.udpStatus.collectAsState()
+    val rx by remember { derivedStateOf { App.disc.rxPackets } }
     val online = peers.values.filter {
         it.manual || System.currentTimeMillis() - it.lastSeen < DEVICE_TIMEOUT_MS
     }.sortedBy { it.info.name }
 
     var showAdd by remember { mutableStateOf(false) }
     var showQr by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    Column(modifier = Modifier.clickable { showRename = true }) {
                         Text(App.me.name, fontWeight = FontWeight.SemiBold)
-                        Text("LocalTransfer", fontSize = 11.sp,
+                        Text("LocalTransfer · 点名字改名", fontSize = 10.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 actions = {
-                    // 本机二维码
+                    // 本机二维码（Material 真实二维码图标）
                     IconButton(onClick = { showQr = true }) {
-                        Text("▦", fontSize = 18.sp)
+                        Icon(Icons.Rounded.QrCode2, "本机二维码")
                     }
                     // 添加设备
                     IconButton(onClick = { showAdd = true }) {
-                        Text("＋", fontSize = 22.sp)
+                        Icon(Icons.Rounded.Add, "添加设备")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -308,29 +327,39 @@ fun DeviceListScreen() {
             )
         },
     ) { pad ->
-        if (online.isEmpty()) {
-            Column(
-                Modifier.fillMaxSize().padding(pad),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text("⌕", fontSize = 44.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(8.dp))
-                Text("等待设备上线…",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("同一局域网自动发现 · 或点 ＋ 手动添加",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } else {
-            LazyColumn(Modifier.padding(pad).fillMaxSize()) {
-                items(online, key = { it.info.id }) { p ->
-                    DeviceRow(p) { App.currentPeer = p.info.id }
-                    HorizontalDivider(color = MaterialTheme.colorScheme
-                        .surfaceVariant.copy(alpha = 0.4f))
+        Column(Modifier.fillMaxSize().padding(pad)) {
+            if (online.isEmpty()) {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text("⌕", fontSize = 44.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Text("等待设备上线…",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("同一局域网自动发现 · 或点 ＋ 手动添加",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    items(online, key = { it.info.id }) { p ->
+                        DeviceRow(p) { App.currentPeer = p.info.id }
+                        HorizontalDivider(color = MaterialTheme.colorScheme
+                            .surfaceVariant.copy(alpha = 0.4f))
+                    }
                 }
             }
+            // 诊断栏（排查"互相看不见"）
+            Text(
+                "$udp · 收包 $rx",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 3.dp),
+            )
         }
     }
 
@@ -340,6 +369,40 @@ fun DeviceListScreen() {
         onDismiss = { showAdd = false },
     )
     if (showQr) MyQrDialog(onDismiss = { showQr = false })
+    if (showRename) RenameDialog(onDismiss = { showRename = false })
+}
+
+/** 改名：随机重掷 + 手动输入 */
+@Composable
+fun RenameDialog(onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(App.me.name) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("设备名", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                OutlinedTextField(name, { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { name = randomPoeticName() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.Casino, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("换个诗意的名字", fontSize = 13.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                App.renameDevice(name)
+                onDismiss()
+            }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
@@ -501,18 +564,35 @@ fun ChatScreen(peerId: String) {
                     else ProgressCard(progresses[i - msgs.size])
                 }
             }
-            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { activity?.pick() },
-                    contentPadding = PaddingValues(12.dp)) { Text("📎") }
-                Spacer(Modifier.width(8.dp))
-                OutlinedTextField(input, { input = it }, Modifier.weight(1f),
-                    placeholder = { Text("输入消息") }, maxLines = 4,
-                    shape = RoundedCornerShape(20.dp))
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = {
-                    if (input.isNotBlank()) { App.sendText(peerId, input); input = "" }
-                }, contentPadding = PaddingValues(horizontal = 16.dp)) {
-                    Text("发送")
+            // 紧凑输入条：小图标按钮 + 胶囊输入框 + 圆形发送
+            Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { activity?.pick() },
+                    modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.AttachFile, "选择文件",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.width(4.dp))
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { v -> input = v },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("消息", fontSize = 13.sp) },
+                    maxLines = 3,
+                    shape = RoundedCornerShape(18.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                if (input.isNotBlank()) {
+                    SmallFloatingActionButton(onClick = {
+                        App.sendText(peerId, input); input = ""
+                    }, shape = CircleShape,
+                        containerColor = IndigoDark,
+                        contentColor = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.AutoMirrored.Rounded.Send, "发送",
+                            modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }

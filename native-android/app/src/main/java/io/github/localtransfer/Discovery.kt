@@ -46,6 +46,11 @@ class Discovery(private val me: DeviceInfo, context: Context) {
         context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     private var lock: WifiManager.MulticastLock? = null
 
+    /** 诊断状态（设备列表底部小字显示，排查"互相看不见"） */
+    val udpStatus = MutableStateFlow("初始化…")
+    @Volatile var rxPackets = 0
+        private set
+
     fun start(port: Int) {
         // Android WiFi 驱动默认过滤多播帧，必须持锁
         try {
@@ -55,8 +60,8 @@ class Discovery(private val me: DeviceInfo, context: Context) {
         } catch (_: Exception) {}
         // 各循环独立协程——之前 loop 排在 announceLoop 前面顺序执行，
         // loop 的 receive() 永远阻塞 → announce 从未发过（手机对电脑不可见的根因）
-        scope.launch { runCatching { bindAndLoop() } }
-        scope.launch { while (true) { runCatching { announce() }; delay(5000) } }
+        scope.launch { bindAndLoop() }
+        scope.launch { while (true) { announce(); delay(5000) } }
         scope.launch { while (true) { runCatching { subnetScan() }; delay(45_000) } }
         scope.launch { while (true) { runCatching { keepalive() }; delay(6000) } }
     }
@@ -64,18 +69,31 @@ class Discovery(private val me: DeviceInfo, context: Context) {
     // MARK: UDP 收发
 
     private fun bindAndLoop() {
-        // reuseAddress 必须在 bind 之前：传 null 构造未绑定 socket，设好选项再 bind
-        val s = MulticastSocket(null as java.net.SocketAddress?)
-        runCatching { s.reuseAddress = true }
-        s.broadcast = true
-        s.bind(java.net.InetSocketAddress(DISCOVERY_PORT))
-        @Suppress("DEPRECATION")
-        runCatching { s.joinGroup(InetAddress.getByName(DISCOVERY_GROUP)) }
+        val s = try {
+            // reuseAddress 必须在 bind 之前：未绑定构造 → 设选项 → bind。
+            // bind/join 的任何异常都不吞——发不出去 announce 手机就对电脑不可见
+            val tmp = MulticastSocket(null as java.net.SocketAddress?)
+            runCatching { tmp.reuseAddress = true }
+            tmp.broadcast = true
+            tmp.bind(java.net.InetSocketAddress(DISCOVERY_PORT))
+            @Suppress("DEPRECATION")
+            runCatching { tmp.joinGroup(InetAddress.getByName(DISCOVERY_GROUP)) }
+            udpStatus.value = "UDP √ :${DISCOVERY_PORT}"
+            tmp
+        } catch (e: Exception) {
+            udpStatus.value = "UDP ×（${e.message}）——仅靠扫描发现"
+            null
+        } ?: return
         sock = s
         val buf = ByteArray(2048)
         while (true) {
             val pkt = DatagramPacket(buf, buf.size)
-            s.receive(pkt)
+            try {
+                s.receive(pkt)
+            } catch (_: Exception) {
+                continue
+            }
+            rxPackets++
             val raw = String(pkt.data, 0, pkt.length, Charsets.UTF_8)
             val j = runCatching { JSONObject(raw) }.getOrNull() ?: continue
             handle(j, pkt.address, s)

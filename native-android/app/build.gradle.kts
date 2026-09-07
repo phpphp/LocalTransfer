@@ -63,6 +63,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     // XML 主题（manifest 里引用的 Material3 主题在 material 库里）
     implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.compose.material:material-icons-extended")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
