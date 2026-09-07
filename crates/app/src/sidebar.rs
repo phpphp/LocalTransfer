@@ -21,21 +21,6 @@ pub const SIDEBAR_W: f32 = 244.;
 /// 设备行高
 const ROW_H: f32 = 40.;
 
-/// 平台类型 → Lucide 风格 SVG path（图标库没有设备类图标，手绘等价物）
-/// viewBox 24x24，stroke 风格与 kit 图标一致（stroke=currentColor, width=2）
-pub fn plat_icon(plat: &str) -> &'static str {
-    match plat.to_ascii_lowercase().as_str() {
-        // 监视器：屏幕 + 支架
-        "windows" | "linux" => "M3 4h18v12H3z M8 20h8 M12 16v4",
-        // 笔记本：屏幕 + 底座线
-        "mac" | "macos" => "M4 5h16v11H4z M2 19h20",
-        // 手机：圆角竖屏
-        "ios" => "M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z M11 19h2",
-        "android" => "M7 8h10v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V8z M7 8V6a5 5 0 0 1 10 0v2 M9 3l-1-2 M15 3l1-2 M9.5 12.5v1 M14.5 12.5v1",
-        _ => "M3 4h18v12H3z M8 20h8 M12 16v4",
-    }
-}
-
 pub fn plat_label(plat: &str) -> String {
     match plat.to_ascii_lowercase().as_str() {
         "windows" => "Windows".into(),
@@ -47,23 +32,76 @@ pub fn plat_label(plat: &str) -> String {
     }
 }
 
-/// 平台图标（svg 元素 + 自绘 path，颜色跟主题）
+/// 平台图标（div 拼几何形状——gpui 的 svg() 只认资产路径，data: URI 渲染为空）。
+/// 颜色跟主题；16px 座内 11px 主体。
 pub fn plat_svg(plat: &str, size: f32, color: Hsla) -> impl IntoElement {
-    let data = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="{}"/></svg>"#,
-        plat_icon(plat)
-    );
-    div()
-        .flex_none()
-        .size(px(size))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_color(color)
-        .child(svg().path(SharedString::from(format!(
-            "data:image/svg+xml;utf8,{}",
-            data
-        ))))
+    let body = px(size * 0.68);   // 主体尺寸
+    match plat.to_ascii_lowercase().as_str() {
+        // 监视器：屏幕 + 底部支架（Windows / Linux）
+        "windows" | "linux" => div()
+            .flex_none()
+            .size(px(size))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(size * 0.08))
+            .child(
+                div()
+                    .size(px(size * 0.85))
+                    .rounded(px(size * 0.12))
+                    .border_1()
+                    .border_color(color),
+            )
+            .child(
+                div()
+                    .w(px(size * 0.45))
+                    .h(px(1.))
+                    .bg(color),
+            ),
+        // 笔记本：屏幕 + 底座横线（Mac）
+        "mac" | "macos" => div()
+            .flex_none()
+            .size(px(size))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_end()
+            .gap(px(size * 0.1))
+            .child(
+                div()
+                    .size(px(size * 0.8))
+                    .rounded_t(px(size * 0.1))
+                    .border_1()
+                    .border_color(color),
+            )
+            .child(
+                div()
+                    .w(px(size))
+                    .h(px(1.))
+                    .rounded_full()
+                    .bg(color),
+            ),
+        // 手机：竖圆角矩形 + 底部圆点（iPhone / Android 通用）
+        _ => div()
+            .flex_none()
+            .size(px(size))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .size(body)
+                    .rounded(px(size * 0.18))
+                    .border_1()
+                    .border_color(color)
+                    .flex()
+                    .items_end()
+                    .justify_center()
+                    .pb(px(1.))
+                    .child(div().w(px(size * 0.16)).h(px(1.)).bg(color)),
+            ),
+    }
 }
 
 impl RootView {

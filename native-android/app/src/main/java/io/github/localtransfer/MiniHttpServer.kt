@@ -370,9 +370,14 @@ class MiniHttpServer(
             }
         } catch (e: Exception) {
             android.util.Log.w("LocalTransfer", "转存下载目录失败: ${e.message}", e)
+            // 把失败原因带给 UI（截断）——用户看不到 logcat 时能转述
+            publishError = e.message?.take(60) ?: e.javaClass.simpleName
             null to null
         }
     }
+
+    /** 最近一次转存失败的原因（卡片标注用；null = 无失败） */
+    @Volatile var publishError: String? = null
 }
 
 private fun readLine(input: InputStream): String? {

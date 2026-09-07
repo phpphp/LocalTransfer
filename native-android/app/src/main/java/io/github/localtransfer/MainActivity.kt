@@ -165,10 +165,10 @@ object App {
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
                 progress.clear()
                 // 位置标注：有 MediaStore URI（公共下载目录）才标 Download；
-                // 只有缓存路径（转存失败兜底）标"应用存储"提醒用户
+                // 只有缓存路径（转存失败兜底）标真实原因
                 val anyPublic = files.any { it.uri != null }
                 val location = if (anyPublic) "Download/LocalTransfer"
-                               else "应用存储（转存下载目录失败，点击仍可打开）"
+                               else "转存失败: ${server.publishError ?: "?"} · 点文件仍可打开"
                 chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
                     false,
                     if (files.size == 1) files[0].name else "${files.size} 个文件",
