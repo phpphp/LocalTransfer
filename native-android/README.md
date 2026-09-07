@@ -40,24 +40,14 @@ gradle wrapper 未包含（复用全局 gradle 或 `gradle wrapper` 生成）。
 - HTTP 服务是手写的迷你实现（Flutter 用 shelf），路由语义一致
 - 文件选择用系统 `GetMultipleContents`（无需 file_picker 插件）
 
-## 签名打包
+## 签名打包（已配置正式证书）
+
+正式证书 `localtransfer.jks` + `keystore.properties`（均不入 git，密码与备份见本地 `SIGNING.md`）。
+gradle 构建时自动签名：
 
 ```bash
-# 1) 构建
 gradle :app:assembleRelease
-# 2) 对齐
-$ANDROID_HOME/build-tools/36.0.0/zipalign -f 4 \
-  app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
-# 3) 签名（当前用 debug keystore；正式发布请生成自有 keystore 替换）
-$ANDROID_HOME/build-tools/36.0.0/apksigner sign \
-  --ks ~/.android/debug.keystore --ks-pass pass:android \
-  --ks-key-alias androiddebugkey --key-pass pass:android \
-  --out app-release-signed.apk aligned.apk
+# 产物（已签名+对齐）：app/build/outputs/apk/release/app-release.apk
 ```
 
-正式发布签名（自建 keystore，妥善保管，丢失则无法覆盖升级）：
-
-```bash
-keytool -genkey -v -keystore localtransfer.jks -alias localtransfer \
-  -keyalg RSA -keysize 2048 -validity 10000
-```
+证书缺失时自动回落 debug 签名（新克隆的开发机直接可构建）。

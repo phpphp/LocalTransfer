@@ -1,3 +1,7 @@
 build/
 .gradle/
 local.properties
+keystore.properties
+localtransfer.jks
+*.jks
+SIGNING.md
