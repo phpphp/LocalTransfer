@@ -207,6 +207,12 @@ object App {
     var saveDirDisplay by mutableStateOf("")
     /** 自动接收文件 */
     var autoReceive by mutableStateOf(false)
+    /** 主题模式：null=跟随系统 */
+    var themeMode by mutableStateOf<String?>(null)
+    /** 手机本机型号名（Build.MODEL，改名弹窗"使用本机设备名"用） */
+    val phoneModel: String by lazy { Build.MODEL ?: "" }
+    /** 速度采样表：token → (纳秒时间, 累计字节, 上次速度) */
+    internal val speedSamples = HashMap<String, Triple<Long, Long, Double>>()
 
     fun init(context: Context) {
         if (inited) return
@@ -218,8 +224,12 @@ object App {
             id = UUID.randomUUID().toString()
             prefs.edit().putString("device_id", id).apply()
         }
+        // 默认设备名 = 手机型号（如 "Pixel 8"）；未存过时用型号，不落库
+        //（用户改过名 / 点过"随机"才持久化，保持系统名的动态性）
+        themeMode = prefs.getString("theme_mode", null)
         val name = prefs.getString("device_name", null)
-            ?: randomPoeticName().also { prefs.edit().putString("device_name", it).apply() }
+            ?: Build.MODEL.ifBlank { randomPoeticName().also {
+                prefs.edit().putString("device_name", it).apply() } }
         autoReceive = prefs.getBoolean("auto_receive", false)
         me = DeviceInfo(id, name, "android", 0)
         api = TransferApi(me)
@@ -235,7 +245,21 @@ object App {
                     pendingReq = req
                 }
             }
-            override fun onProgress(token: String, p: RecvProgress) { progress[token] = p }
+            override fun onProgress(token: String, p: RecvProgress) {
+                // 速度采样（400ms 窗口，0.5s 以下不重算）
+                val now = System.nanoTime()
+                val prev = speedSamples[token]
+                val speed: Double
+                if (prev != null && (now - prev.first) / 1e9 < 0.4) {
+                    speed = prev.third                // 距上次采样 <400ms，沿用旧值
+                } else {
+                    speed = if (prev != null)
+                        (p.transferred - prev.second) / ((now - prev.first) / 1e9)
+                    else 0.0                          // 首次回调还没有时间差
+                    speedSamples[token] = Triple(now, p.transferred, speed)
+                }
+                progress[token] = p.copy(speedBps = speed)
+            }
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
                 progress.keys.filter { !it.startsWith("send") }
                     .forEach { progress.remove(it) }
@@ -370,7 +394,15 @@ private val IndigoDark = androidx.compose.ui.graphics.Color(0xFF4F46E5)
 fun App() {
     val ctx = LocalContext.current
     BackInterceptor(ctx)
-    MaterialTheme(colorScheme = darkColorScheme(primary = Indigo)) {
+    // 主题：跟随系统 / 强制亮色 / 强制暗色
+    val isDark = when (App.themeMode) {
+        "light" -> false
+        "dark" -> true
+        else -> androidx.compose.foundation.isSystemInDarkTheme()
+    }
+    val colors = if (isDark) darkColorScheme(primary = Indigo)
+                 else lightColorScheme(primary = IndigoDark)
+    MaterialTheme(colorScheme = colors) {
         val peerId = App.currentPeer
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
         App.pendingReq?.let { req ->
@@ -614,6 +646,23 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                         prefs.edit().putBoolean("auto_receive", on).apply()
                     })
                 }
+                Spacer(Modifier.height(16.dp))
+                // 外观主题（null=跟随系统；putString(null) 即清除，回落跟随系统）
+                Row(Modifier.fillMaxWidth()) {
+                    listOf(null to "跟随系统", "light" to "浅色", "dark" to "深色")
+                        .forEachIndexed { i, (mode, label) ->
+                            if (i > 0) Spacer(Modifier.width(6.dp))
+                            FilterChip(
+                                selected = App.themeMode == mode,
+                                onClick = {
+                                    App.themeMode = mode
+                                    prefs.edit().putString("theme_mode", mode).apply()
+                                },
+                                label = { Text(label, fontSize = 12.sp) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                }
                 if (!hasAllFiles) {
                     Spacer(Modifier.height(8.dp))
                     Text("⚠ 未授予「所有文件访问」权限，写入公共目录会失败。" +
@@ -629,7 +678,7 @@ fun SettingsDialog(onDismiss: () -> Unit) {
     )
 }
 
-/** 改名：随机重掷 + 手动输入 */
+/** 改名：手动输入 + 本机设备名 + 随机诗意名 */
 @Composable
 fun RenameDialog(onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(App.me.name) }
@@ -642,6 +691,18 @@ fun RenameDialog(onDismiss: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true)
                 Spacer(Modifier.height(8.dp))
+                // 使用本机型号
+                if (App.phoneModel.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = { name = App.phoneModel },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.PhoneAndroid, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("使用本机设备名（${App.phoneModel}）", fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
                 OutlinedButton(
                     onClick = { name = randomPoeticName() },
                     modifier = Modifier.fillMaxWidth(),
@@ -952,7 +1013,7 @@ fun MessageBubble(e: ChatEntry) {
                                 if (end) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
                                 else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("${fmtSize(e.size)} · 点击打开", fontSize = 11.sp,
+                        Text(fmtSize(e.size), fontSize = 11.sp,
                             color = if (end)
                                 androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f)
                             else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -981,8 +1042,9 @@ fun ProgressCard(p: RecvProgress) {
             }
             Spacer(Modifier.height(6.dp))
             val frac = if (p.total > 0) p.transferred.toFloat() / p.total else 0f
-            Text("接收中 ${(frac * 100).toInt()}% · " +
-                    "${fmtSize(p.transferred)} / ${fmtSize(p.total)}",
+            // 速度：>0 才显示
+            val speed = if (p.speedBps > 0) " · ${fmtSize(p.speedBps.toLong())}/s" else ""
+            Text("接收中 ${(frac * 100).toInt()}%$speed",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(6.dp))

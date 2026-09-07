@@ -67,6 +67,8 @@ data class RecvProgress(
     val peerId: String, val label: String,
     val fileIdx: Int, val fileCount: Int,
     val transferred: Long, val total: Long,
+    /** 瞬时速度（字节/秒），0=未知 */
+    val speedBps: Double = 0.0,
 )
 
 /** 消息是否自己发出的（气泡朝向） */
