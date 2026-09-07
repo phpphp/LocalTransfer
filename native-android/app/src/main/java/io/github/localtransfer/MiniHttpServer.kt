@@ -135,6 +135,11 @@ class MiniHttpServer(
         fun onBatchDone(peerId: String, files: List<ReceivedFile>)
     }
 
+    /** 用户自定义接收目录（null = 未设置，走 MediaStore 三级回退）。
+     *  设置后文件直接 File 写入该目录（保持层级），API 29+ 需用户授予
+     *  "所有文件访问"权限（MANAGE_EXTERNAL_STORAGE），无权时逐文件回落。 */
+    @Volatile var customSaveDir: String? = null
+
     private var server: ServerSocket? = null
     private val sessions = ConcurrentHashMap<String, RecvSession>()
     private val main = Handler(Looper.getMainLooper())
@@ -280,13 +285,29 @@ class MiniHttpServer(
         val rel = segs.joinToString("/")
         val f = File(sess.saveDir, if (segs.isEmpty()) meta.name else segs.joinToString("/"))
         f.parentFile?.mkdirs()
+        // 自定义目录可用且可写 → 接收时直接写入最终位置（跳过缓存+转存）
+        val customDir = customSaveDir?.let { File(it) }
+        val useCustom = customDir != null && runCatching {
+            customDir!!.isDirectory && customDir!!.canWrite()
+        }.getOrDefault(false)
+        val finalFile = if (useCustom && customDir != null) {
+            File(customDir, if (segs.isEmpty()) meta.name else segs.joinToString("/"))
+        } else f
 
         // 声明大小（进度分母）：chunked 时没有 Content-Length，用 meta.size
         val declared = meta.size
         val label = if (rel.contains('/')) rel.substring(0, rel.indexOf('/')) else rel
         var written = 0L
         val buf = ByteArray(64 * 1024)
-        val out = f.outputStream()
+        val target = if (useCustom) finalFile else f
+        val out = try {
+            target.parentFile?.mkdirs()
+            target.outputStream()
+        } catch (e: Exception) {
+            // 自定义目录写失败（权限被收回等）→ 回落缓存路径
+            publishError = "自定义目录不可写，已存缓存"
+            f.outputStream()
+        }
         try {
             while (true) {
                 val n = req.body.read(buf)
@@ -307,12 +328,14 @@ class MiniHttpServer(
         if (hasLen && written != declared) return Resp.err(400, "大小不符")
         if (written == 0L && declared > 0) return Resp.err(400, "空内容")
 
-        val (uri, path) = publishToDownloads(f, rel)
-        // 转存失败（uri 和 path 都空）→ 用缓存路径兜底（至少能打开）
-        val (finalUri, finalPath) = if (uri == null && path == null) {
-            null to f.absolutePath
+        val (finalUri, finalPath) = if (target == finalFile && useCustom &&
+            finalFile.absolutePath != f.absolutePath) {
+            // 已直接写入自定义目录——不转存，如实标注
+            publishError = null
+            null to finalFile.absolutePath
         } else {
-            uri to path
+            val (uri, path) = publishToDownloads(f, rel)
+            if (uri == null && path == null) null to f.absolutePath else uri to path
         }
         sess.done.add(ReceivedFile(
             if (rel.contains('/')) rel.substring(rel.indexOf('/') + 1) else rel,

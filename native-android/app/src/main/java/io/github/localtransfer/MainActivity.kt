@@ -6,7 +6,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
@@ -36,6 +38,7 @@ import androidx.compose.material.icons.rounded.LaptopMac
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhoneIphone
 import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -193,6 +196,9 @@ object App {
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
         server.setIdentity(me)   // /api/info 返回带真实端口的身份
+        // 恢复自定义接收目录（空 = 自动 MediaStore 三级回退）
+        server.customSaveDir =
+            prefs.getString("save_dir", "")?.ifBlank { null }
         disc = Discovery(me, ctx)
         disc.restoreManual(prefs.getStringSet("manual_peers", emptySet())?.toList()
             ?: emptyList())
@@ -321,6 +327,7 @@ fun DeviceListScreen() {
     var showAdd by remember { mutableStateOf(false) }
     var showQr by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -333,6 +340,10 @@ fun DeviceListScreen() {
                     }
                 },
                 actions = {
+                    // 设置（接收目录等）
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Rounded.Settings, "设置")
+                    }
                     // 本机二维码（Material 真实二维码图标）
                     IconButton(onClick = { showQr = true }) {
                         Icon(Icons.Rounded.QrCode2, "本机二维码")
@@ -390,6 +401,64 @@ fun DeviceListScreen() {
     )
     if (showQr) MyQrDialog(onDismiss = { showQr = false })
     if (showRename) RenameDialog(onDismiss = { showRename = false })
+    if (showSettings) SettingsDialog(onDismiss = { showSettings = false })
+}
+
+/** 设置：接收目录（默认空=自动 Download/LocalTransfer；自定义路径直接 File 写入，
+ *  API 29+ 需"所有文件访问"权限） */
+@Composable
+fun SettingsDialog(onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val prefs = remember { ctx.getSharedPreferences("lt", Context.MODE_PRIVATE) }
+    var dir by remember {
+        mutableStateOf(prefs.getString("save_dir", "") ?: "")
+    }
+    val hasAllFiles = remember {
+        Build.VERSION.SDK_INT < 29 || Environment.isExternalStorageManager()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("设置", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Text("接收目录", fontSize = 13.sp)
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(dir, { dir = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("留空 = Download/LocalTransfer") },
+                    singleLine = true)
+                Spacer(Modifier.height(8.dp))
+                if (dir.isNotBlank()) {
+                    Text(
+                        "自定义路径在 Android 10+ 需要「所有文件访问」权限，" +
+                            "未授权时文件会自动存到应用目录",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (!hasAllFiles) {
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(onClick = {
+                            val i = Intent(
+                                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:${ctx.packageName}"))
+                            runCatching { ctx.startActivity(i) }
+                        }, modifier = Modifier.fillMaxWidth()) {
+                            Text("授予所有文件权限", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val d = dir.trim()
+                prefs.edit().putString("save_dir", d).apply()
+                App.server.customSaveDir = d.ifBlank { null }
+                onDismiss()
+            }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 /** 改名：随机重掷 + 手动输入 */
