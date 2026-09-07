@@ -31,7 +31,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
@@ -123,10 +126,10 @@ class MainActivity : ComponentActivity() {
 
     fun startScan() {
         scanLauncher.launch(ScanOptions().apply {
-            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
             setPrompt("对准电脑端二维码（http://IP:端口）")
             setBeepEnabled(false)
-            setOrientationLocked(true)   // 锁定为 Activity 方向（Manifest 已设横屏）
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setCaptureActivity(LandscapeCaptureActivity::class.java)
         })
     }
 
@@ -227,9 +230,7 @@ object App {
             }
             override fun onIncoming(req: IncomingReq) {
                 if (autoReceive) {
-                    req.decision.complete(true)
-                    MainActivity.toast(ctx,
-                        "自动接收 ${req.peer.name} 的 ${req.files.size} 个文件")
+                    req.decision.complete(true)   // 静默接收，不弹窗不 Toast
                 } else {
                     pendingReq = req
                 }
@@ -238,18 +239,18 @@ object App {
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
                 progress.keys.filter { !it.startsWith("send") }
                     .forEach { progress.remove(it) }
-                val anyPublic = files.any { it.uri != null }
-                val location = when {
-                    anyPublic -> "Download/LocalTransfer"
-                    server.publishError != null -> server.publishError!!
-                    else -> "Download/LocalTransfer"
-                }
+                // 位置 = 实际写入的目录（server.customSaveDir），失败时显示原因
+                val location = server.customSaveDir
+                    ?: files.firstNotNullOfOrNull { it.path }?.let {
+                        it.substringBeforeLast('/')
+                    } ?: "Download/LocalTransfer"
+                val finalLocation = server.publishError ?: location
                 chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
                     false,
                     if (files.size == 1) files[0].name else "${files.size} 个文件",
                     files.sumOf { it.size },
                     System.currentTimeMillis(),
-                    location, files))
+                    finalLocation, files))
             }
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
@@ -399,8 +400,6 @@ fun DeviceListScreen() {
     val ctx = LocalContext.current
     val activity = ctx as? MainActivity
     val peers by App.peers.collectAsState()
-    val udp by App.disc.udpStatus.collectAsState()
-    val rx by remember { derivedStateOf { App.disc.rxPackets } }
     val online = peers.values.filter {
         it.manual || System.currentTimeMillis() - it.lastSeen < DEVICE_TIMEOUT_MS
     }.sortedBy { it.info.name }
@@ -414,10 +413,32 @@ fun DeviceListScreen() {
         topBar = {
             TopAppBar(
                 title = {
-                    Column(modifier = Modifier.clickable { showRename = true }) {
-                        Text(App.me.name, fontWeight = FontWeight.SemiBold)
-                        Text("LocalTransfer · 点名字改名", fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // 上面 App 图标+名称；下面 头像+名字+改名图标
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()) {
+                        // App 图标
+                        Box(Modifier.size(34.dp).clip(CircleShape)
+                            .background(Indigo.copy(alpha = 0.18f)),
+                            contentAlignment = Alignment.Center) {
+                            Icon(Icons.Rounded.Language, "LocalTransfer",
+                                tint = Indigo, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text("LocalTransfer", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // 名字 + 改名按钮
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(App.me.name, fontWeight = FontWeight.SemiBold,
+                                    fontSize = 15.sp)
+                                Spacer(Modifier.width(2.dp))
+                                Icon(Icons.Rounded.Edit, "改名",
+                                    modifier = Modifier
+                                        .size(13.dp)
+                                        .clickable { showRename = true },
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 },
                 actions = {
@@ -464,14 +485,6 @@ fun DeviceListScreen() {
                     }
                 }
             }
-            // 诊断栏（排查"互相看不见"）
-            Text(
-                "$udp · 收包 $rx",
-                fontSize = 10.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 3.dp),
-            )
         }
     }
 
@@ -844,8 +857,8 @@ fun ChatScreen(peerId: String) {
                     }
                 },
                 navigationIcon = {
-                    TextButton(onClick = { App.currentPeer = null }) {
-                        Text("←", fontSize = 18.sp)
+                    IconButton(onClick = { App.currentPeer = null }) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回")
                     }
                 },
             )

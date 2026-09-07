@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<paths>
-    <!-- 缓存接收目录（MediaStore 失败时的兜底存储） -->
-    <cache-path name="cache" path="LocalTransfer/" />
+<paths xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="UnusedAttribute">
+    <!-- 缓存接收目录 -->
+    <cache-path name="cache" path="." />
     <!-- 应用外部专项目录（三级回退的最终存储） -->
+    <external-files-path name="ext_files" path="." />
     <external-files-path name="ext_download" path="Download/LocalTransfer/" />
-    <external-files-path name="ext_root" path="." />
-    <cache-path name="cache_root" path="." />
+    <!-- 自定义接收目录（Download 及任意外部存储路径） -->
+    <external-path name="external" path="." />
 </paths>

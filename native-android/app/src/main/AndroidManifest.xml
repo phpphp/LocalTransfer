@@ -45,11 +45,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 横屏扫码 CaptureActivity -->
+        <!-- 横屏扫码（自定义 CaptureActivity 子类） -->
         <activity
-            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:name=".LandscapeCaptureActivity"
             android:screenOrientation="sensorLandscape"
-            tools:replace="screenOrientation"
             android:exported="false" />
     </application>
 </manifest>
