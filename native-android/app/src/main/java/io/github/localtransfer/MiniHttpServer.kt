@@ -326,39 +326,37 @@ class MiniHttpServer(
         return Resp.ok()
     }
 
-    /** 复制进公共下载目录（Download/LocalTransfer/...）。
-     *  返回 (uri, 真实路径)；失败时把错误打进日志并把源文件留在原地
-     *  （返回 null 对——调用方用 cacheDir 路径兜底打开）。 */
+    /** 复制进公共下载目录。三级回退：
+     *  1) MediaStore + 子目录（Download/LocalTransfer/…）——部分 ROM 不自动建目录
+     *  2) MediaStore 平铺（Download/ 根 + "LT_" 前缀保留层级信息）
+     *  3) 应用外部专项目录（Android/data/<pkg>/files/Download/LocalTransfer）——
+     *     永远可写、USB 可见；卡片如实标注位置 */
     private fun publishToDownloads(src: File, rel: String): Pair<String?, String?> {
         val segs = rel.split('/').filter { it.isNotEmpty() && it != ".." }
         val display = segs.lastOrNull() ?: src.name
         val sub = if (segs.size > 1) segs.dropLast(1).joinToString("/") else ""
-        return try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, display)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
-                    put(MediaStore.Downloads.RELATIVE_PATH,
-                        "Download/LocalTransfer" + if (sub.isNotEmpty()) "/$sub" else "")
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-                val uri = context.contentResolver.insert(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: throw IllegalStateException("MediaStore insert 返回 null")
-                context.contentResolver.openOutputStream(uri)?.use { o ->
-                    src.inputStream().use { it.copyTo(o) }
-                } ?: throw IllegalStateException("openOutputStream 失败")
-                // 写完清 pending 标记，文件立即可见
-                val done = ContentValues().apply {
-                    put(MediaStore.MediaColumns.IS_PENDING, 0)
-                }
-                context.contentResolver.update(uri, done, null, null)
-                val p = context.contentResolver.query(uri,
-                    arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
-                    if (c.moveToFirst()) c.getString(0) else null }
-                src.delete()
-                uri.toString() to p
-            } else {
+
+        if (Build.VERSION.SDK_INT >= 29) {
+            // 尝试 1：带子目录
+            try {
+                val uri = mediaStoreInsert(src, display,
+                    "Download/LocalTransfer" + if (sub.isNotEmpty()) "/$sub" else "")
+                if (uri != null) return uri
+            } catch (e: Exception) {
+                android.util.Log.w("LocalTransfer", "MediaStore 子目录失败: ${e.message}")
+            }
+            // 尝试 2：平铺（文件名带层级前缀）
+            val flatName = ("LocalTransfer_" +
+                    (if (sub.isNotEmpty()) sub.replace('/', '_') + "_" else "")) + display
+            try {
+                val uri = mediaStoreInsert(src, flatName, "Download")
+                if (uri != null) return uri
+            } catch (e: Exception) {
+                android.util.Log.w("LocalTransfer", "MediaStore 平铺失败: ${e.message}")
+            }
+        } else {
+            // API < 29：直接文件路径
+            try {
                 @Suppress("DEPRECATION")
                 val dir = File(Environment.getExternalStoragePublicDirectory(
                     Environment.DIRECTORY_DOWNLOADS), "LocalTransfer" +
@@ -366,17 +364,55 @@ class MiniHttpServer(
                 dir.mkdirs()
                 val dst = File(dir, display)
                 src.copyTo(dst, overwrite = true); src.delete()
-                null to dst.absolutePath
+                publishError = null
+                return null to dst.absolutePath
+            } catch (e: Exception) {
+                android.util.Log.w("LocalTransfer", "直写失败: ${e.message}")
             }
+        }
+
+        // 尝试 3：应用外部专项目录（永远可写）
+        return try {
+            val dir = File(context.getExternalFilesDir(
+                Environment.DIRECTORY_DOWNLOADS), "LocalTransfer")
+            dir.mkdirs()
+            val dst = File(dir, display)
+            src.copyTo(dst, overwrite = true); src.delete()
+            publishError = "已存到应用目录 Android/data/${context.packageName}/files/Download/LocalTransfer"
+            null to dst.absolutePath
         } catch (e: Exception) {
-            android.util.Log.w("LocalTransfer", "转存下载目录失败: ${e.message}", e)
-            // 把失败原因带给 UI（截断）——用户看不到 logcat 时能转述
+            android.util.Log.w("LocalTransfer", "转存全部失败: ${e.message}", e)
             publishError = e.message?.take(60) ?: e.javaClass.simpleName
             null to null
         }
     }
 
-    /** 最近一次转存失败的原因（卡片标注用；null = 无失败） */
+    /** MediaStore 插入 + 写入 + 清 pending；失败返回 null（不抛） */
+    private fun mediaStoreInsert(src: File, display: String, relPath: String): Pair<String?, String?>? {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, display)
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.RELATIVE_PATH, relPath)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = context.contentResolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        context.contentResolver.openOutputStream(uri)?.use { o ->
+            src.inputStream().use { it.copyTo(o) }
+        } ?: return null
+        context.contentResolver.update(uri, ContentValues().apply {
+            put(MediaStore.MediaColumns.IS_PENDING, 0)
+        }, null, null)
+        val p = context.contentResolver.query(uri,
+            arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null }
+        src.delete()
+        publishError = null
+        return uri.toString() to p
+    }
+
+    /** 最近一次转存的结果说明（卡片标注用；null = 正常 Download/LocalTransfer） */
     @Volatile var publishError: String? = null
 }
 

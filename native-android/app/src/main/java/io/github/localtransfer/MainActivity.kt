@@ -29,6 +29,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.LaptopMac
+import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.PhoneIphone
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.*
@@ -167,8 +173,11 @@ object App {
                 // 位置标注：有 MediaStore URI（公共下载目录）才标 Download；
                 // 只有缓存路径（转存失败兜底）标真实原因
                 val anyPublic = files.any { it.uri != null }
-                val location = if (anyPublic) "Download/LocalTransfer"
-                               else "转存失败: ${server.publishError ?: "?"} · 点文件仍可打开"
+                val location = when {
+                    anyPublic -> "Download/LocalTransfer"
+                    server.publishError != null -> server.publishError!!
+                    else -> "Download/LocalTransfer"
+                }
                 chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
                     false,
                     if (files.size == 1) files[0].name else "${files.size} 个文件",
@@ -411,6 +420,29 @@ fun RenameDialog(onDismiss: () -> Unit) {
     )
 }
 
+/** 平台 → 设备类型图标（Material 真实图标） */
+@Composable
+fun platIcon(plat: String): androidx.compose.ui.graphics.vector.ImageVector =
+    when (plat.lowercase()) {
+        "windows" -> Icons.Rounded.DesktopWindows
+        "mac", "macos" -> Icons.Rounded.LaptopMac
+        "linux" -> Icons.Rounded.Computer
+        "ios" -> Icons.Rounded.PhoneIphone
+        "android" -> Icons.Rounded.PhoneAndroid
+        else -> Icons.Rounded.Devices
+    }
+
+/** 平台显示名 */
+fun platLabel(plat: String): String = when (plat.lowercase()) {
+    "windows" -> "Windows"
+    "mac", "macos" -> "Mac"
+    "linux" -> "Linux"
+    "ios" -> "iPhone"
+    "android" -> "Android"
+    "web" -> "网页"
+    else -> plat
+}
+
 @Composable
 fun DeviceRow(p: Peer, onClick: () -> Unit) {
     Row(
@@ -418,19 +450,19 @@ fun DeviceRow(p: Peer, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 首字头像
+        // 设备类型图标（圆底）
         Box(
             Modifier.size(42.dp).clip(CircleShape)
                 .background(Indigo.copy(alpha = 0.18f)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(p.info.name.take(1), color = Indigo,
-                fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+            Icon(platIcon(p.info.plat), platLabel(p.info.plat),
+                tint = Indigo, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(p.info.name, fontWeight = FontWeight.Medium)
-            Text("${p.info.plat} · ${p.addr.hostAddress}:${p.info.port}",
+            Text("${platLabel(p.info.plat)} · ${p.addr.hostAddress}:${p.info.port}",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -526,12 +558,13 @@ fun ChatScreen(peerId: String) {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 设备类型图标（圆底）
                         Box(Modifier.size(34.dp).clip(CircleShape)
                             .background(Indigo.copy(alpha = 0.18f)),
                             contentAlignment = Alignment.Center) {
-                            Text((peer?.info?.name ?: "?").take(1),
-                                color = Indigo, fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold)
+                            Icon(platIcon(peer?.info?.plat ?: ""),
+                                platLabel(peer?.info?.plat ?: ""),
+                                tint = Indigo, modifier = Modifier.size(18.dp))
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
@@ -543,7 +576,10 @@ fun ChatScreen(peerId: String) {
                                         androidx.compose.ui.graphics.Color(0xFF22C55E)
                                     else MaterialTheme.colorScheme.onSurfaceVariant))
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (peer != null) "在线" else "离线",
+                                Text(
+                                    if (peer != null)
+                                        "${platLabel(peer.info.plat)} · 在线"
+                                    else "离线",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }

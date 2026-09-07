@@ -18,7 +18,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Siza
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::root::{fmt_size, fmt_speed, transfer_open_target, initial_avatar, RootView};
+use crate::root::{fmt_size, fmt_speed, transfer_open_target, RootView};
 use transfer_core::{MessageKind, UiCommand};
 
 /// 固定宽度让卡片整齐（也避开 shrink-to-fit）
@@ -85,6 +85,12 @@ impl RootView {
 
         // 网页会话：名称与副标题特判（右侧显示本机网页地址）
         let is_web = peer == transfer_core::proto::WEB_PEER_ID;
+        let peer_plat = self
+            .devices
+            .iter()
+            .find(|d| d.info.id == peer)
+            .map(|d| d.info.plat.clone())
+            .unwrap_or_else(|| "web".into());
         let name = if is_web {
             "网页".to_string()
         } else {
@@ -141,6 +147,7 @@ impl RootView {
             .child(self.chat_header(
                 is_web,
                 &name,
+                &peer_plat,
                 online,
                 addr,
                 active_count,
@@ -190,16 +197,18 @@ impl RootView {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_arguments)]
+
+
     fn chat_header(
         &self,
         is_web: bool,
         name: &str,
+        plat: &str,
         online: bool,
         addr: Option<String>,
-        active_count: usize,
-        active_frac: f64,
-        active_speed: f64,
+        _active_count: usize,
+        _active_frac: f64,
+        _active_speed: f64,
         cancel_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -219,7 +228,15 @@ impl RootView {
             .gap_2p5()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(initial_avatar(name, 28., cx))
+            .child(crate::sidebar::plat_svg(
+                plat,
+                16.,
+                if online {
+                    cx.theme().primary
+                } else {
+                    cx.theme().muted_foreground
+                },
+            ))
             // 设备名
             .child(
                 div()
@@ -230,6 +247,14 @@ impl RootView {
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(name.to_string()),
+            )
+            // 平台名（如 "Windows"）
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(crate::sidebar::plat_label(plat)),
             )
             // 在线状态点
             .child(
