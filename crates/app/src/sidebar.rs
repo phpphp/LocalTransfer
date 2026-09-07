@@ -420,24 +420,22 @@ impl RootView {
             }))
             // 首字头像（设备名首字，圆底）
             .child(initial_avatar(name, 22., cx))
-            // 名字 + 设备类型（图标在平台名前）
+            // 名字（吃掉剩余宽度）
             .child(
-                h_flex()
+                div()
                     .flex_1()
                     .min_w_0()
-                    .gap_1_5()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .text_sm()
-                            .when(!online, |el| {
-                                el.text_color(cx.theme().muted_foreground)
-                            })
-                            .child(name.to_string()),
-                    )
-                    .child(plat_svg(plat, 11., icon_color))
+                    .truncate()
+                    .text_sm()
+                    .when(!online, |el| el.text_color(cx.theme().muted_foreground))
+                    .child(name.to_string()),
+            )
+            // 设备类型：图标 + 平台名紧贴（整组 flex_none 贴右侧）
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .child(plat_svg(plat, 10., icon_color))
                     .child(
                         div()
                             .flex_none()
@@ -446,10 +444,11 @@ impl RootView {
                             .child(plat_label(plat)),
                     ),
             )
-            // 在线状态点（挪到右侧）
+            // 在线状态点
             .child(
                 div()
                     .flex_none()
+                    .ml_1()
                     .size(px(7.))
                     .rounded_full()
                     .when(online, |el| el.bg(cx.theme().success))

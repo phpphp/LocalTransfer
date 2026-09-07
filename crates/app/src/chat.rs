@@ -230,32 +230,16 @@ impl RootView {
             .border_color(cx.theme().border)
             // 首字头像（设备名首字）
             .child(initial_avatar(name, 28., cx))
-            // 设备名 + 平台（图标在平台名前）
+            // 设备名（flex_1 吃掉中间空间，名字不被挤）
             .child(
                 div()
-                    .flex_none()
-                    .max_w(px(220.))
+                    .flex_1()
                     .min_w_0()
+                    .max_w(px(240.))
                     .truncate()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(name.to_string()),
-            )
-            .child(crate::sidebar::plat_svg(
-                plat,
-                12.,
-                if online {
-                    cx.theme().primary
-                } else {
-                    cx.theme().muted_foreground
-                },
-            ))
-            .child(
-                div()
-                    .flex_none()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(crate::sidebar::plat_label(plat)),
             )
             // 在线状态点
             .child(
@@ -267,6 +251,28 @@ impl RootView {
                     .when(!online, |el| {
                         el.bg(cx.theme().muted_foreground).opacity(0.4)
                     }),
+            )
+            // 设备类型：图标 + 平台名紧贴（一组，flex_none）
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .child(crate::sidebar::plat_svg(
+                        plat,
+                        11.,
+                        if online {
+                            cx.theme().primary
+                        } else {
+                            cx.theme().muted_foreground
+                        },
+                    ))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(crate::sidebar::plat_label(plat)),
+                    ),
             )
             // 弹性空隙：地址顶到最右（传输进度只在消息流里，不占标题栏）
             .child(div().flex_1())
