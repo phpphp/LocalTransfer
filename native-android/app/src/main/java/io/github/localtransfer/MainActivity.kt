@@ -73,6 +73,34 @@ class MainActivity : ComponentActivity() {
             if (uris.isNotEmpty()) App.sendPicked(uris)
         }
 
+    // 接收目录选择器（必须在 Activity 初始化期注册，Composable 内注册会崩）
+    val pickDirLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri ?: return@registerForActivityResult
+            val ctx = applicationContext
+            val docId = try {
+                android.provider.DocumentsContract.getTreeDocumentId(uri)
+            } catch (_: Exception) { null }
+            val path = docId?.let { id ->
+                when {
+                    id.startsWith("primary:") ->
+                        "/storage/emulated/0/" + id.removePrefix("primary:")
+                    id.startsWith("/") -> id
+                    else -> null
+                }
+            }
+            if (path != null) {
+                ctx.getSharedPreferences("lt", Context.MODE_PRIVATE)
+                    .edit().putString("save_dir", path).apply()
+                App.server.customSaveDir = path
+                MainActivity.toast(ctx, "已设为 $path")
+            } else {
+                MainActivity.toast(ctx, "无法识别该目录的真实路径，请换一个")
+            }
+        }
+
+    fun pickDir() = pickDirLauncher.launch(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         App.init(applicationContext)
@@ -458,38 +486,13 @@ fun AllFilesPermissionDialog() {
 @Composable
 fun SettingsDialog(onDismiss: () -> Unit) {
     val ctx = LocalContext.current
-    val activity = ctx as? MainActivity
     val prefs = remember { ctx.getSharedPreferences("lt", Context.MODE_PRIVATE) }
-    // 当前生效目录（自定义过显示自定义，否则默认）
+    val activity = ctx as? MainActivity
+    // 当前生效目录（选择器回调在 Activity 侧写 prefs，弹窗重建时读最新）
     var currentDir by remember {
-        mutableStateOf(prefs.getString("save_dir",
-            "/storage/emulated/0/Download/LocalTransfer")!!)
+        mutableStateOf(App.server.customSaveDir
+            ?: "/storage/emulated/0/Download/LocalTransfer")
     }
-    // SAF 选择的目录（URI，待转换）
-    val pickDir = (ctx as? ComponentActivity)
-        ?.registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-            uri ?: return@registerForActivityResult
-            // SAF URI → 尽力转真实路径（content:// 是 tree，最终写 File 还是要真实路径）
-            val docId = try {
-                android.provider.DocumentsContract.getTreeDocumentId(uri)
-            } catch (_: Exception) { null }
-            val path = docId?.let { id ->
-                when {
-                    id.startsWith("primary:") ->
-                        "/storage/emulated/0/" + id.removePrefix("primary:")
-                    id.startsWith("/") -> id
-                    else -> null
-                }
-            }
-            if (path != null) {
-                prefs.edit().putString("save_dir", path).apply()
-                App.server.customSaveDir = path
-                currentDir = path
-                MainActivity.toast(ctx, "已设为 $path")
-            } else {
-                MainActivity.toast(ctx, "无法识别该目录的真实路径，请换一个")
-            }
-        }
     val hasAllFiles = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
 
     AlertDialog(
@@ -502,7 +505,7 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                 Text(currentDir, fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(8.dp))
-                Button(onClick = { pickDir?.launch(null) },
+                Button(onClick = { activity?.pickDir() },
                     modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Rounded.Folder, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
