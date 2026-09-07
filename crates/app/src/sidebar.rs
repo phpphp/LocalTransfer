@@ -418,18 +418,33 @@ impl RootView {
                 this.select_peer(&id_for_click, cx);
                 cx.notify();
             }))
-            // 设备类型图标（自绘 SVG，颜色区分在线/离线）
-            .child(plat_svg(plat, 16., icon_color))
-            // 名字（单行截断）
+            // 首字头像（设备名首字，圆底）
+            .child(initial_avatar(name, 22., cx))
+            // 名字 + 设备类型（图标在平台名前）
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_w_0()
-                    .w_full()
-                    .truncate()
-                    .text_sm()
-                    .when(!online, |el| el.text_color(cx.theme().muted_foreground))
-                    .child(name.to_string()),
+                    .gap_1_5()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_sm()
+                            .when(!online, |el| {
+                                el.text_color(cx.theme().muted_foreground)
+                            })
+                            .child(name.to_string()),
+                    )
+                    .child(plat_svg(plat, 11., icon_color))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(plat_label(plat)),
+                    ),
             )
             // 在线状态点（挪到右侧）
             .child(

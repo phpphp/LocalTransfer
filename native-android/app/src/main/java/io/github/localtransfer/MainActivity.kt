@@ -86,12 +86,17 @@ class MainActivity : ComponentActivity() {
     fun pick() = pickFiles.launch("*/*")
 
     companion object {
-        /** 打开接收的文件（URI 优先，失败回退真实路径） */
+        /** 打开接收的文件。
+         *  URI 用 content://（MediaStore，可跨应用授权）；
+         *  真实路径用 FileProvider（file:// 直传 API 24+ 抛 FileUriExposedException） */
         fun openFile(context: Context, f: ReceivedFile) {
             try {
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     val uri = f.uri?.let { Uri.parse(it) }
-                        ?: f.path?.let { Uri.fromFile(File(it)) } ?: return
+                        ?: f.path?.let {
+                            androidx.core.content.FileProvider.getUriForFile(
+                                context, "${context.packageName}.fileprovider", File(it))
+                        } ?: return
                     setDataAndType(uri, mimeOf(f.name))
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
@@ -450,21 +455,28 @@ fun DeviceRow(p: Peer, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // 设备类型图标（圆底）
+        // 首字头像（设备名首字）
         Box(
             Modifier.size(42.dp).clip(CircleShape)
                 .background(Indigo.copy(alpha = 0.18f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(platIcon(p.info.plat), platLabel(p.info.plat),
-                tint = Indigo, modifier = Modifier.size(22.dp))
+            Text(p.info.name.take(1), color = Indigo,
+                fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(p.info.name, fontWeight = FontWeight.Medium)
-            Text("${platLabel(p.info.plat)} · ${p.addr.hostAddress}:${p.info.port}",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // 副标题：设备类型图标 + 平台名 · 地址
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(platIcon(p.info.plat), platLabel(p.info.plat),
+                    modifier = Modifier.size(13.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(3.dp))
+                Text("${platLabel(p.info.plat)} · ${p.addr.hostAddress}:${p.info.port}",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         // 在线点 + 手动标记
         if (p.manual) {
@@ -558,24 +570,30 @@ fun ChatScreen(peerId: String) {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // 设备类型图标（圆底）
+                        // 首字头像（设备名首字）
                         Box(Modifier.size(34.dp).clip(CircleShape)
                             .background(Indigo.copy(alpha = 0.18f)),
                             contentAlignment = Alignment.Center) {
-                            Icon(platIcon(peer?.info?.plat ?: ""),
-                                platLabel(peer?.info?.plat ?: ""),
-                                tint = Indigo, modifier = Modifier.size(18.dp))
+                            Text((peer?.info?.name ?: "?").take(1),
+                                color = Indigo, fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold)
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Text(peer?.info?.name ?: "设备",
                                 fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                            // 副标题：在线点 + 设备类型图标 + "平台名 · 在线"
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(6.dp).clip(CircleShape)
                                     .background(if (peer != null)
                                         androidx.compose.ui.graphics.Color(0xFF22C55E)
                                     else MaterialTheme.colorScheme.onSurfaceVariant))
                                 Spacer(Modifier.width(4.dp))
+                                Icon(platIcon(peer?.info?.plat ?: ""),
+                                    platLabel(peer?.info?.plat ?: ""),
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.width(3.dp))
                                 Text(
                                     if (peer != null)
                                         "${platLabel(peer.info.plat)} · 在线"

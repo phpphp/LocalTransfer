@@ -18,7 +18,7 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Siza
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::root::{fmt_size, fmt_speed, transfer_open_target, RootView};
+use crate::root::{fmt_size, fmt_speed, transfer_open_target, initial_avatar, RootView};
 use transfer_core::{MessageKind, UiCommand};
 
 /// 固定宽度让卡片整齐（也避开 shrink-to-fit）
@@ -228,16 +228,9 @@ impl RootView {
             .gap_2p5()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(crate::sidebar::plat_svg(
-                plat,
-                16.,
-                if online {
-                    cx.theme().primary
-                } else {
-                    cx.theme().muted_foreground
-                },
-            ))
-            // 设备名
+            // 首字头像（设备名首字）
+            .child(initial_avatar(name, 28., cx))
+            // 设备名 + 平台（图标在平台名前）
             .child(
                 div()
                     .flex_none()
@@ -248,7 +241,15 @@ impl RootView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(name.to_string()),
             )
-            // 平台名（如 "Windows"）
+            .child(crate::sidebar::plat_svg(
+                plat,
+                12.,
+                if online {
+                    cx.theme().primary
+                } else {
+                    cx.theme().muted_foreground
+                },
+            ))
             .child(
                 div()
                     .flex_none()
