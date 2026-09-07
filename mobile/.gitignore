@@ -1,0 +1,9 @@
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+*.iml
+.android/
+.ios/
+android/keystore.properties
+android/app/localtransfer.jks
