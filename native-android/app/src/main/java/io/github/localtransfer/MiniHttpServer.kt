@@ -135,10 +135,14 @@ class MiniHttpServer(
         fun onBatchDone(peerId: String, files: List<ReceivedFile>)
     }
 
-    /** 用户自定义接收目录（null = 未设置，走 MediaStore 三级回退）。
+    /** 用户自定义接收目录（null = 未设置）。
      *  设置后文件直接 File 写入该目录（保持层级），API 29+ 需用户授予
-     *  "所有文件访问"权限（MANAGE_EXTERNAL_STORAGE），无权时逐文件回落。 */
+     *  "所有文件访问"权限（MANAGE_EXTERNAL_STORAGE）；无权时缓存兜底并
+     *  置 permissionNeeded 让 UI 弹窗引导。 */
     @Volatile var customSaveDir: String? = null
+
+    /** 写入失败（权限）→ UI 弹权限引导窗（读后清） */
+    @Volatile var permissionNeeded: Boolean = false
 
     private var server: ServerSocket? = null
     private val sessions = ConcurrentHashMap<String, RecvSession>()
@@ -304,8 +308,9 @@ class MiniHttpServer(
             target.parentFile?.mkdirs()
             target.outputStream()
         } catch (e: Exception) {
-            // 自定义目录写失败（权限被收回等）→ 回落缓存路径
-            publishError = "自定义目录不可写，已存缓存"
+            // 写失败（无权限等）→ 触发 UI 权限引导 + 缓存兜底（文件不丢）
+            main.post { permissionNeeded = true }
+            publishError = "目录无权限，文件已存缓存——请授权后重收"
             f.outputStream()
         }
         try {

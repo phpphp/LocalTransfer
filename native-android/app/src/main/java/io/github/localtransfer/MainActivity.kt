@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.LaptopMac
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhoneIphone
@@ -154,6 +155,8 @@ object App {
     var pendingReq by mutableStateOf<IncomingReq?>(null)
     var sendStatus by mutableStateOf<String?>(null)
     var currentPeer by mutableStateOf<String?>(null)
+    /** 需要"所有文件访问"权限（首次启动 / 权限被收回）→ UI 弹窗引导 */
+    var needsAllFilesPermission by mutableStateOf(false)
 
     fun init(context: Context) {
         if (inited) return
@@ -196,9 +199,12 @@ object App {
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
         server.setIdentity(me)   // /api/info 返回带真实端口的身份
-        // 恢复自定义接收目录（空 = 自动 MediaStore 三级回退）
-        server.customSaveDir =
-            prefs.getString("save_dir", "")?.ifBlank { null }
+        // 默认接收目录：Download/LocalTransfer（直接 File 写入）；
+        // 用户自定义过的（save_dir）优先。首次启动没权限时由 UI 弹窗引导授权。
+        val saved = prefs.getString("save_dir", "")?.ifBlank { null }
+        server.customSaveDir = saved ?: "/storage/emulated/0/Download/LocalTransfer"
+        needsAllFilesPermission = Build.VERSION.SDK_INT >= 30 &&
+                !Environment.isExternalStorageManager()
         disc = Discovery(me, ctx)
         disc.restoreManual(prefs.getStringSet("manual_peers", emptySet())?.toList()
             ?: emptyList())
@@ -402,20 +408,89 @@ fun DeviceListScreen() {
     if (showQr) MyQrDialog(onDismiss = { showQr = false })
     if (showRename) RenameDialog(onDismiss = { showRename = false })
     if (showSettings) SettingsDialog(onDismiss = { showSettings = false })
+    // 权限引导：需要"所有文件访问"时弹窗（首次启动 / 权限被收回 / 接收时写失败）
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (App.needsAllFilesPermission || App.server.permissionNeeded) {
+                App.server.permissionNeeded = false
+                App.needsAllFilesPermission = true
+            }
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+    if (App.needsAllFilesPermission &&
+        Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+        AllFilesPermissionDialog()
+    }
 }
 
-/** 设置：接收目录（默认空=自动 Download/LocalTransfer；自定义路径直接 File 写入，
- *  API 29+ 需"所有文件访问"权限） */
+/** 权限引导弹窗（可跳过，收文件时会再弹） */
+@Composable
+fun AllFilesPermissionDialog() {
+    val ctx = LocalContext.current
+    AlertDialog(
+        onDismissRequest = { App.needsAllFilesPermission = false },
+        title = { Text("需要存储权限", fontWeight = FontWeight.SemiBold) },
+        text = {
+            Text("接收的文件将保存到 Download/LocalTransfer。\n" +
+                    "Android 11+ 写入公共目录需要「所有文件访问」权限，" +
+                    "请在下一页中开启。")
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                App.needsAllFilesPermission = false
+                val i = Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${ctx.packageName}"))
+                runCatching { ctx.startActivity(i) }
+            }) { Text("去授权") }
+        },
+        dismissButton = {
+            TextButton(onClick = { App.needsAllFilesPermission = false }) {
+                Text("暂不")
+            }
+        },
+    )
+}
+
+/** 设置：接收目录（系统文件夹选择器选目录，不手输路径；
+ *  默认 Download/LocalTransfer，"恢复默认"一键回设） */
 @Composable
 fun SettingsDialog(onDismiss: () -> Unit) {
     val ctx = LocalContext.current
+    val activity = ctx as? MainActivity
     val prefs = remember { ctx.getSharedPreferences("lt", Context.MODE_PRIVATE) }
-    var dir by remember {
-        mutableStateOf(prefs.getString("save_dir", "") ?: "")
+    // 当前生效目录（自定义过显示自定义，否则默认）
+    var currentDir by remember {
+        mutableStateOf(prefs.getString("save_dir",
+            "/storage/emulated/0/Download/LocalTransfer")!!)
     }
-    val hasAllFiles = remember {
-        Build.VERSION.SDK_INT < 29 || Environment.isExternalStorageManager()
-    }
+    // SAF 选择的目录（URI，待转换）
+    val pickDir = (ctx as? ComponentActivity)
+        ?.registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri ?: return@registerForActivityResult
+            // SAF URI → 尽力转真实路径（content:// 是 tree，最终写 File 还是要真实路径）
+            val docId = try {
+                android.provider.DocumentsContract.getTreeDocumentId(uri)
+            } catch (_: Exception) { null }
+            val path = docId?.let { id ->
+                when {
+                    id.startsWith("primary:") ->
+                        "/storage/emulated/0/" + id.removePrefix("primary:")
+                    id.startsWith("/") -> id
+                    else -> null
+                }
+            }
+            if (path != null) {
+                prefs.edit().putString("save_dir", path).apply()
+                App.server.customSaveDir = path
+                currentDir = path
+                MainActivity.toast(ctx, "已设为 $path")
+            } else {
+                MainActivity.toast(ctx, "无法识别该目录的真实路径，请换一个")
+            }
+        }
+    val hasAllFiles = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -424,40 +499,39 @@ fun SettingsDialog(onDismiss: () -> Unit) {
             Column {
                 Text("接收目录", fontSize = 13.sp)
                 Spacer(Modifier.height(6.dp))
-                OutlinedTextField(dir, { dir = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("留空 = Download/LocalTransfer") },
-                    singleLine = true)
+                Text(currentDir, fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(8.dp))
-                if (dir.isNotBlank()) {
-                    Text(
-                        "自定义路径在 Android 10+ 需要「所有文件访问」权限，" +
-                            "未授权时文件会自动存到应用目录",
+                Button(onClick = { pickDir?.launch(null) },
+                    modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.Folder, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("选择文件夹…", fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        val def = "/storage/emulated/0/Download/LocalTransfer"
+                        prefs.edit().putString("save_dir", def).apply()
+                        App.server.customSaveDir = def
+                        currentDir = def
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("恢复默认（Download/LocalTransfer）", fontSize = 12.sp)
+                }
+                if (!hasAllFiles) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("⚠ 未授予「所有文件访问」权限，写入公共目录会失败。" +
+                            "接收文件时会弹窗提醒。",
                         fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (!hasAllFiles) {
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedButton(onClick = {
-                            val i = Intent(
-                                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                Uri.parse("package:${ctx.packageName}"))
-                            runCatching { ctx.startActivity(i) }
-                        }, modifier = Modifier.fillMaxWidth()) {
-                            Text("授予所有文件权限", fontSize = 12.sp)
-                        }
-                    }
+                        color = androidx.compose.ui.graphics.Color(0xFFEF4444))
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val d = dir.trim()
-                prefs.edit().putString("save_dir", d).apply()
-                App.server.customSaveDir = d.ifBlank { null }
-                onDismiss()
-            }) { Text("保存") }
+            TextButton(onClick = onDismiss) { Text("关闭") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
