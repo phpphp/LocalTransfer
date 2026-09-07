@@ -130,45 +130,15 @@ class MainActivity : ComponentActivity() {
             setBeepEnabled(false)
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
             setCaptureActivity(LandscapeCaptureActivity::class.java)
+            // 关掉库的"锁当前方向"（默认 true 会锁成竖屏），方向交给
+            // LandscapeCaptureActivity 的 sensorLandscape
+            setOrientationLocked(false)
         })
     }
 
     fun pick() = pickFiles.launch("*/*")
 
     companion object {
-        /** 打开接收的文件。
-         *  URI 用 content://（MediaStore，可跨应用授权）；
-         *  真实路径用 FileProvider（file:// 直传 API 24+ 抛 FileUriExposedException） */
-        fun openFile(context: Context, f: ReceivedFile) {
-            try {
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    val uri = f.uri?.let { Uri.parse(it) }
-                        ?: f.path?.let {
-                            androidx.core.content.FileProvider.getUriForFile(
-                                context, "${context.packageName}.fileprovider", File(it))
-                        } ?: return
-                    setDataAndType(uri, mimeOf(f.name))
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                context.startActivity(intent)
-            } catch (e: Exception) {
-                toast(context, "打开失败：${e.message}")
-            }
-        }
-
-        private fun mimeOf(name: String): String = when (
-            name.substringAfterLast('.', "").lowercase()) {
-            "jpg", "jpeg" -> "image/jpeg"
-            "png" -> "image/png"
-            "gif" -> "image/gif"
-            "webp" -> "image/webp"
-            "mp4" -> "video/mp4"
-            "mp3" -> "audio/mpeg"
-            "pdf" -> "application/pdf"
-            "txt", "md", "log" -> "text/plain"
-            else -> "application/octet-stream"
-        }
-
         fun toast(context: Context, text: String) {
             android.widget.Toast.makeText(context, text,
                 android.widget.Toast.LENGTH_SHORT).show()
@@ -214,6 +184,23 @@ object App {
     /** 速度采样表：token → (纳秒时间, 累计字节, 上次速度) */
     internal val speedSamples = HashMap<String, Triple<Long, Long, Double>>()
 
+    /** 传输速度采样（收发共用）：<400ms 沿用旧值；字节回退=换文件，重置基线保留旧速度。
+     *  只在主线程调（收发回调都经 main.post 到这里）。 */
+    fun sampleSpeed(key: String, transferred: Long): Double {
+        val now = System.nanoTime()
+        val prev = speedSamples[key]
+        if (prev != null) {
+            val dt = (now - prev.first) / 1e9
+            if (dt < 0.4) return prev.third
+            val delta = transferred - prev.second
+            val speed = if (delta > 0) delta / dt else prev.third
+            speedSamples[key] = Triple(now, transferred, speed)
+            return speed
+        }
+        speedSamples[key] = Triple(now, transferred, 0.0)
+        return 0.0
+    }
+
     fun init(context: Context) {
         if (inited) return
         inited = true
@@ -246,23 +233,11 @@ object App {
                 }
             }
             override fun onProgress(token: String, p: RecvProgress) {
-                // 速度采样（400ms 窗口，0.5s 以下不重算）
-                val now = System.nanoTime()
-                val prev = speedSamples[token]
-                val speed: Double
-                if (prev != null && (now - prev.first) / 1e9 < 0.4) {
-                    speed = prev.third                // 距上次采样 <400ms，沿用旧值
-                } else {
-                    speed = if (prev != null)
-                        (p.transferred - prev.second) / ((now - prev.first) / 1e9)
-                    else 0.0                          // 首次回调还没有时间差
-                    speedSamples[token] = Triple(now, p.transferred, speed)
-                }
-                progress[token] = p.copy(speedBps = speed)
+                progress[token] = p.copy(speedBps = sampleSpeed(token, p.transferred))
             }
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
                 progress.keys.filter { !it.startsWith("send") }
-                    .forEach { progress.remove(it) }
+                    .forEach { progress.remove(it); speedSamples.remove(it) }
                 // 位置 = 实际写入的目录（server.customSaveDir），失败时显示原因
                 val location = server.customSaveDir
                     ?: files.firstNotNullOfOrNull { it.path }?.let {
@@ -355,12 +330,14 @@ object App {
             runCatching {
                 api.sendFiles(p, metas) { i, t, tot ->
                     main.post {
-                        progress[sendKey] = RecvProgress(peerId, title, i, metas.size, t, tot)
+                        progress[sendKey] = RecvProgress(peerId, title, i, metas.size,
+                            t, tot, sampleSpeed(sendKey, t), sending = true)
                     }
                 }
                 main.post {
                     progress.remove(sendKey)
-                    // 发送完成的卡片带源文件路径（可点击打开）
+                    speedSamples.remove(sendKey)
+                    // 发送完成的卡片带源文件路径
                     val sent = metas.map { m ->
                         ReceivedFile(m.first.name, m.first.size, null, m.second)
                     }
@@ -370,6 +347,7 @@ object App {
             }.onFailure {
                 main.post {
                     progress.remove(sendKey)
+                    speedSamples.remove(sendKey)
                     sendStatus = it.message
                 }
             }
@@ -976,7 +954,6 @@ fun ChatScreen(peerId: String) {
 
 @Composable
 fun MessageBubble(e: ChatEntry) {
-    val ctx = LocalContext.current
     val end = e.outgoing
     Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
         contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart) {
@@ -993,12 +970,8 @@ fun MessageBubble(e: ChatEntry) {
                     is ChatEntry.Text -> Text(e.text,
                         color = if (end) androidx.compose.ui.graphics.Color.White
                         else MaterialTheme.colorScheme.onSurface)
-                    is ChatEntry.FileCard -> Column(
-                        Modifier.clickable {
-                            e.files.firstOrNull()?.let {
-                                MainActivity.openFile(ctx, it)
-                            }
-                        }) {
+                    // 文件卡只展示，不可点击（用户明确要求）
+                    is ChatEntry.FileCard -> Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (e.files.size > 1 || e.files.isEmpty()) "📁" else "📄",
                                 fontSize = 18.sp)
@@ -1044,7 +1017,7 @@ fun ProgressCard(p: RecvProgress) {
             val frac = if (p.total > 0) p.transferred.toFloat() / p.total else 0f
             // 速度：>0 才显示
             val speed = if (p.speedBps > 0) " · ${fmtSize(p.speedBps.toLong())}/s" else ""
-            Text("接收中 ${(frac * 100).toInt()}%$speed",
+            Text("${if (p.sending) "发送中" else "接收中"} ${(frac * 100).toInt()}%$speed",
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(6.dp))

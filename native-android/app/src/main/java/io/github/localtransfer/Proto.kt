@@ -69,6 +69,8 @@ data class RecvProgress(
     val transferred: Long, val total: Long,
     /** 瞬时速度（字节/秒），0=未知 */
     val speedBps: Double = 0.0,
+    /** 方向标记：true=发送中（进度卡文案用） */
+    val sending: Boolean = false,
 )
 
 /** 消息是否自己发出的（气泡朝向） */
