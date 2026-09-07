@@ -5,3 +5,4 @@ keystore.properties
 localtransfer.jks
 *.jks
 SIGNING.md
+.gradle/
