@@ -21,6 +21,51 @@ pub const SIDEBAR_W: f32 = 244.;
 /// 设备行高
 const ROW_H: f32 = 40.;
 
+/// 平台类型 → Lucide 风格 SVG path（图标库没有设备类图标，手绘等价物）
+/// viewBox 24x24，stroke 风格与 kit 图标一致（stroke=currentColor, width=2）
+pub fn plat_icon(plat: &str) -> &'static str {
+    match plat.to_ascii_lowercase().as_str() {
+        // 监视器：屏幕 + 支架
+        "windows" | "linux" => "M3 4h18v12H3z M8 20h8 M12 16v4",
+        // 笔记本：屏幕 + 底座线
+        "mac" | "macos" => "M4 5h16v11H4z M2 19h20",
+        // 手机：圆角竖屏
+        "ios" => "M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z M11 19h2",
+        "android" => "M7 8h10v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V8z M7 8V6a5 5 0 0 1 10 0v2 M9 3l-1-2 M15 3l1-2 M9.5 12.5v1 M14.5 12.5v1",
+        _ => "M3 4h18v12H3z M8 20h8 M12 16v4",
+    }
+}
+
+pub fn plat_label(plat: &str) -> String {
+    match plat.to_ascii_lowercase().as_str() {
+        "windows" => "Windows".into(),
+        "mac" | "macos" => "Mac".into(),
+        "linux" => "Linux".into(),
+        "ios" => "iPhone".into(),
+        "android" => "Android".into(),
+        other => other.to_string(),
+    }
+}
+
+/// 平台图标（svg 元素 + 自绘 path，颜色跟主题）
+pub fn plat_svg(plat: &str, size: f32, color: Hsla) -> impl IntoElement {
+    let data = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="{}"/></svg>"#,
+        plat_icon(plat)
+    );
+    div()
+        .flex_none()
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(color)
+        .child(svg().path(SharedString::from(format!(
+            "data:image/svg+xml;utf8,{}",
+            data
+        ))))
+}
+
 impl RootView {
     pub fn render_sidebar(
         &mut self,
@@ -28,11 +73,11 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         // 只显示在线设备（离线的不再列出——用户要求）
-        let mut online: Vec<(String, String)> = self
+        let mut online: Vec<(String, String, String)> = self
             .devices
             .iter()
             .filter(|d| d.online)
-            .map(|d| (d.info.id.clone(), d.info.name.clone()))
+            .map(|d| (d.info.id.clone(), d.info.name.clone(), d.info.plat.clone()))
             .collect();
         online.sort_by(|a, b| a.1.cmp(&b.1));
 
@@ -148,7 +193,9 @@ impl RootView {
                             .children(
                                 online
                                     .iter()
-                                    .map(|(id, name)| self.device_row(id, name, true, cx)),
+                                    .map(|(id, name, plat)| {
+                                        self.device_row(id, name, plat, true, cx)
+                                    }),
                             )
                     })
                     .when(empty, |el| el.child(self.sidebar_empty(cx))),
@@ -295,10 +342,12 @@ impl RootView {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn device_row(
         &self,
         id: &str,
         name: &str,
+        plat: &str,
         online: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -306,6 +355,11 @@ impl RootView {
         let unread = self.unread.get(id).copied().unwrap_or(0);
         let id_for_click = id.to_string();
         let hover_bg = cx.theme().list_hover;
+        let icon_color = if online {
+            cx.theme().primary
+        } else {
+            cx.theme().muted_foreground
+        };
 
         h_flex()
             .id(SharedString::from(format!("dev-{id}")))
@@ -326,17 +380,8 @@ impl RootView {
                 this.select_peer(&id_for_click, cx);
                 cx.notify();
             }))
-            // 在线状态点
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(8.))
-                    .rounded_full()
-                    .when(online, |el| el.bg(cx.theme().success))
-                    .when(!online, |el| {
-                        el.bg(cx.theme().muted_foreground).opacity(0.4)
-                    }),
-            )
+            // 设备类型图标（自绘 SVG，颜色区分在线/离线）
+            .child(plat_svg(plat, 16., icon_color))
             // 名字（单行截断）
             .child(
                 div()
@@ -347,6 +392,17 @@ impl RootView {
                     .text_sm()
                     .when(!online, |el| el.text_color(cx.theme().muted_foreground))
                     .child(name.to_string()),
+            )
+            // 在线状态点（挪到右侧）
+            .child(
+                div()
+                    .flex_none()
+                    .size(px(7.))
+                    .rounded_full()
+                    .when(online, |el| el.bg(cx.theme().success))
+                    .when(!online, |el| {
+                        el.bg(cx.theme().muted_foreground).opacity(0.35)
+                    }),
             )
             // 未读角标
             .when(unread > 0, |el| {
