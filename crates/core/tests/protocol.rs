@@ -118,6 +118,7 @@ fn discovery_text_file_roundtrip() {
                     req_id,
                     accept: true,
                     save_dir: Some(save_dir.clone()),
+                    overwrite: false,
                 })
                 .unwrap();
         }
@@ -194,6 +195,7 @@ fn prepare_rejected() {
                     req_id,
                     accept: false,
                     save_dir: None,
+                    overwrite: false,
                 })
                 .unwrap();
         }

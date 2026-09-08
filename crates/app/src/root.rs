@@ -207,6 +207,14 @@ pub struct RootView {
     /// 开机启动（HKCU Run 键，启动时读一次）
     pub autostart: bool,
 
+    /// 侧栏当前宽度（拖拽调宽，clamp 180~460）
+    pub sidebar_w: f32,
+    /// 拖拽中：(按下时鼠标 x, 按下时侧栏宽)
+    pub sidebar_drag: Option<(f32, f32)>,
+
+    /// 覆盖确认弹窗中的请求（接收前发现同名文件）
+    pub overwrite_req: Option<IncomingReq>,
+
     _keep: Vec<Subscription>,
 }
 
@@ -294,6 +302,9 @@ impl RootView {
             connect_input,
             show_web_qr: false,
             autostart: autostart_enabled(),
+            sidebar_w: crate::sidebar::SIDEBAR_W,
+            sidebar_drag: None,
+            overwrite_req: None,
             _keep: vec![sub],
         };
         view
@@ -406,6 +417,7 @@ impl RootView {
                         req_id: old.req_id,
                         accept: false,
                         save_dir: None,
+                        overwrite: false,
                     });
                 }
                 // 自动接收：直接接受，不进会话卡片
@@ -414,6 +426,7 @@ impl RootView {
                         req_id: req_id.clone(),
                         accept: true,
                         save_dir: None,
+                        overwrite: false,
                     });
                     self.toast(
                         format!("自动接收 {} 的 {} 个文件", peer.info.name, files.len()),
@@ -617,6 +630,42 @@ impl RootView {
         self.chats.entry(peer).or_default().push(msg);
     }
 
+    /// 接收按钮：预检下载目录同名冲突——有则弹覆盖确认，无则直接接收
+    pub fn ask_overwrite(&mut self, cx: &mut Context<Self>) {
+        let Some(req) = self.incoming.clone() else {
+            return;
+        };
+        let conflict = req
+            .files
+            .iter()
+            .any(|f| self.me.download_dir.join(&f.rel_path).exists());
+        if conflict {
+            self.overwrite_req = Some(req);
+        } else {
+            self.accept_request(req, false, cx);
+        }
+        cx.notify();
+    }
+
+    /// 确认接收（overwrite=true 时同名文件直接覆盖，否则自动改名避让）
+    pub fn accept_request(
+        &mut self,
+        req: IncomingReq,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = self.core.send(UiCommand::RespondRequest {
+            req_id: req.req_id,
+            accept: true,
+            save_dir: None,
+            overwrite,
+        });
+        self.incoming = None;
+        self.overwrite_req = None;
+        self.sync_scroller(cx);
+        cx.notify();
+    }
+
     /// 删除消息（右键菜单）：UI 直写 WAL 库（与 core 并发安全），
     /// 同时清会话缓存。批次卡片传整组的 id。
     pub fn delete_messages(&mut self, peer: &str, ids: &[i64], cx: &mut Context<Self>) {
@@ -754,6 +803,7 @@ impl Render for RootView {
                     .items_stretch()
                     .overflow_hidden()
                     .child(self.render_sidebar(window, cx))
+                    .child(self.sidebar_resizer(cx))
                     .child(self.render_chat(window, cx)),
             )
             .children(self.render_overlays(window, cx))
@@ -763,6 +813,53 @@ impl Render for RootView {
 
 pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
+}
+
+impl RootView {
+    /// 侧栏右缘拖条：按下记起点，move 里改宽（window.on_mouse_event
+    /// 是每帧注册的窗口级监听——拖得再快也不会丢事件），松手结束。
+    fn sidebar_resizer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let handle = cx.entity();
+        div()
+            .id("sb-resize")
+            .w(px(5.))
+            .h_full()
+            .flex_none()
+            .cursor_col_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    this.sidebar_drag = Some((ev.position.x.into(), this.sidebar_w));
+                    cx.notify();
+                }),
+            )
+            .child(canvas(
+                move |_, _, _| {},
+                move |_, _, window, _cx| {
+                    let handle = handle.clone();
+                    window.on_mouse_event(
+                        move |ev: &MouseMoveEvent, phase, _window, cx| {
+                            if phase != DispatchPhase::Bubble {
+                                return;
+                            }
+                            handle.update(cx, |this, cx| {
+                                if let Some((start_x, start_w)) = this.sidebar_drag {
+                                    if ev.pressed_button == Some(MouseButton::Left) {
+                                        this.sidebar_w =
+                                            (start_w + f32::from(ev.position.x) - start_x).clamp(180., 460.);
+                                        cx.notify();
+                                    } else {
+                                        // 松手（或按下状态丢失）结束拖拽
+                                        this.sidebar_drag = None;
+                                        cx.notify();
+                                    }
+                                }
+                            });
+                        },
+                    );
+                },
+            ))
+    }
 }
 
 /// 主题辅助（全部走 gpui-kit 主题，自动适配明暗）

@@ -223,6 +223,9 @@ pub enum UiCommand {
         req_id: String,
         accept: bool,
         save_dir: Option<PathBuf>,
+        /// true=同名文件直接覆盖（默认 false 自动改名避让）。
+        /// 仅 UI→core 内部命令，不影响线上协议。
+        overwrite: bool,
     },
     CancelTransfer {
         transfer_id: String,

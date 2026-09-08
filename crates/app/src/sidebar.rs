@@ -129,7 +129,7 @@ impl RootView {
 
         v_flex()
             .id("sidebar")
-            .w(px(SIDEBAR_W))
+            .w(px(self.sidebar_w))
             .h_full()
             .flex_none()
             .min_h_0()

@@ -273,8 +273,9 @@ async fn run(
                 req_id,
                 accept,
                 save_dir,
+                overwrite,
             } => {
-                server::respond(&state, &req_id, accept, save_dir);
+                server::respond(&state, &req_id, accept, save_dir, overwrite);
             }
             UiCommand::CancelTransfer { transfer_id } => {
                 // 优先查发送登记；否则按接收会话取消

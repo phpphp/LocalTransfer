@@ -580,6 +580,7 @@ impl RootView {
                                                                 req_id: r.req_id,
                                                                 accept: false,
                                                                 save_dir: None,
+                                                                overwrite: false,
                                                             },
                                                         );
                                                     }
@@ -592,21 +593,13 @@ impl RootView {
                                         Button::new("req-accept")
                                             .label("接收")
                                             .primary()
+                                            .flex_1()
                                             .small()
                                             .flex_1()
                                             .on_click(cx.listener(
                                                 move |this, _ev, _window, cx| {
-                                                    if let Some(r) = this.incoming.take() {
-                                                        let _ = this.core.send(
-                                                            UiCommand::RespondRequest {
-                                                                req_id: r.req_id,
-                                                                accept: true,
-                                                                save_dir: None,
-                                                            },
-                                                        );
-                                                    }
-                                                    this.sync_scroller(cx);
-                                                    cx.notify();
+                                                    // 同名文件预检：有冲突先弹覆盖确认
+                                                    this.ask_overwrite(cx);
                                                 },
                                             )),
                                     ),
@@ -1040,8 +1033,16 @@ impl RootView {
         }
         let done = progress.map(|p| p.2).unwrap_or(saved_path.is_some());
 
+        // 元素 id 必须全列表唯一：同一文件多次传输会出多张同名卡片，
+        // 按文件名拼 id 会冲突（同名 id 的交互元素只有第一个能点）——
+        // 用 传输id+文件id 拼，缺省回退文件名
+        let key = match (transfer_id, file_id) {
+            (Some(t), Some(f)) => format!("{t}-{f}"),
+            _ => name.to_string(),
+        };
+
         v_flex()
-            .id(SharedString::from(format!("card-{name}")))
+            .id(SharedString::from(format!("card-{key}")))
             .w(px(CARD_W))
             .flex_none()
             .gap_2p5()
@@ -1129,7 +1130,7 @@ impl RootView {
                         .w_full()
                         .gap_1p5()
                         .child(
-                            Progress::new(SharedString::from(format!("prog-{name}")))
+                            Progress::new(SharedString::from(format!("prog-{key}")))
                                 .value((frac * 100.0) as f32)
                                 .xsmall(),
                         )
@@ -1180,7 +1181,7 @@ impl RootView {
                                     ),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("open-{name}")))
+                                Button::new(SharedString::from(format!("open-{key}")))
                                     .label("打开")
                                     .outline()
                                     .xsmall()

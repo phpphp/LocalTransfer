@@ -31,6 +31,8 @@ pub const PREPARE_TIMEOUT_SECS: u64 = 60;
 pub struct Decision {
     pub accept: bool,
     pub save_dir: Option<PathBuf>,
+    /// true=同名文件直接覆盖（否则自动改名避让）
+    pub overwrite: bool,
 }
 
 pub struct PendingRequest {
@@ -45,6 +47,8 @@ pub struct RecvSession {
     pub peer_name: String,
     pub files: Vec<FileMeta>,
     pub save_dir: PathBuf,
+    /// true=同名文件直接覆盖（否则自动改名避让）
+    pub overwrite: bool,
     pub cancel: CancellationToken,
     /// 已完成文件数
     pub completed: usize,
@@ -282,6 +286,7 @@ async fn prepare(
             peer_name: peer_name.clone(),
             files: body.files.clone(),
             save_dir: save_dir.clone(),
+            overwrite: decision.overwrite,
             cancel: CancellationToken::new(),
             completed: 0,
             msg_ids,
@@ -346,10 +351,20 @@ async fn prepare(
 }
 
 /// UI 回应接收请求
-pub fn respond(st: &ServerState, req_id: &str, accept: bool, save_dir: Option<PathBuf>) {
+pub fn respond(
+    st: &ServerState,
+    req_id: &str,
+    accept: bool,
+    save_dir: Option<PathBuf>,
+    overwrite: bool,
+) {
     let pending = st.pending.lock().unwrap().remove(req_id);
     if let Some(p) = pending {
-        let _ = p.responder.send(Decision { accept, save_dir });
+        let _ = p.responder.send(Decision {
+            accept,
+            save_dir,
+            overwrite,
+        });
     }
 }
 
@@ -363,7 +378,7 @@ async fn upload(
     req: Request,
 ) -> Response {
     // 取出会话快照（不长期持锁）
-    let (meta, save_dir, cancel, msg_id, total_files, progress_bytes) = {
+    let (meta, save_dir, overwrite, cancel, msg_id, total_files, progress_bytes) = {
         let sessions = st.sessions.lock().unwrap();
         let Some(sess) = sessions.get(&token) else {
             return err(StatusCode::NOT_FOUND, "会话不存在或已结束");
@@ -377,6 +392,7 @@ async fn upload(
         (
             meta.clone(),
             sess.save_dir.clone(),
+            sess.overwrite,
             sess.cancel.clone(),
             sess.msg_ids.get(&file_id).copied(),
             sess.files.len(),
@@ -384,8 +400,8 @@ async fn upload(
         )
     };
 
-    // 目标路径（含子目录）+ 同名避让
-    let final_path = match target_path(&save_dir, &meta) {
+    // 目标路径（含子目录）+ 同名避让（overwrite=true 直接覆盖不避让）
+    let final_path = match target_path(&save_dir, &meta, overwrite) {
         Ok(p) => p,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
@@ -509,12 +525,16 @@ async fn upload(
 }
 
 /// 计算接收落盘路径：save_dir/rel_path，同名自动加 " (n)"
-fn target_path(save_dir: &std::path::Path, meta: &FileMeta) -> anyhow::Result<PathBuf> {
+fn target_path(
+    save_dir: &std::path::Path,
+    meta: &FileMeta,
+    overwrite: bool,
+) -> anyhow::Result<PathBuf> {
     let p = save_dir.join(&meta.rel_path);
     if !p.starts_with(save_dir) {
         anyhow::bail!("路径逃逸: {}", meta.rel_path);
     }
-    if !p.exists() {
+    if !p.exists() || overwrite {
         return Ok(p);
     }
     // 同名避让：name.ext → name (1).ext
