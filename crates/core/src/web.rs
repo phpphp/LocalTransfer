@@ -724,7 +724,7 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
   .sheet .body { overflow-y: auto; padding: 0 12px 12px; }
   .sheet .fitem2 { padding: 8px 4px; border-top: 1px solid rgba(127,127,127,.12); }
   .sheet .fitem2:first-child { border-top: 0; }
-  .fbtn { border: 1px solid rgba(99,102,241,.5); border-radius: 8px; padding: 6px 10px;
+  .fbtn { border: 0; border-radius: 8px; padding: 6px 10px;
           font-size: 12px; cursor: pointer; color: #6366f1; text-decoration: none;
           display: inline-block; flex: none; white-space: nowrap; }
   a.fbtn:hover, div.fbtn:hover { background: rgba(99,102,241,.12); }
@@ -757,7 +757,7 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
 </div>
 <div id="toast"></div>
 <div id="inputbar">
-  <button class="ibtn" title="发送文件" onclick="document.getElementById('fpick').click()">&#128206;</button>
+  <button class="ibtn" title="发送文件" onclick="document.getElementById('fpick').click()">&#128196;</button>
   <button class="ibtn" title="发送文件夹" onclick="document.getElementById('dpick').click()">&#128193;</button>
   <textarea id="txt" rows="1" placeholder="输入消息，Enter 发送"></textarea>
   <button id="send" onclick="sendText()">发送</button>
