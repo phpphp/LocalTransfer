@@ -45,10 +45,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 横屏扫码（自定义 CaptureActivity 子类） -->
+        <!-- 横屏扫码（固定 landscape：sensorLandscape 会被系统"自动旋转关闭"压回竖屏） -->
         <activity
             android:name=".LandscapeCaptureActivity"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="landscape"
             android:exported="false" />
     </application>
 </manifest>
