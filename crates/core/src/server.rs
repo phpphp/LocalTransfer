@@ -86,7 +86,9 @@ pub async fn serve(state: Arc<ServerState>, port: u16) -> anyhow::Result<()> {
         .route("/api/web/upload", post(crate::web::upload))
         .route("/api/web/list", get(crate::web::list))
         .route("/api/web/download/{id}", get(crate::web::download))
+        .route("/api/web/download-zip/{tid}", get(crate::web::download_zip))
         .route("/api/web/remove/{id}", post(crate::web::remove))
+        .route("/api/web/messages/delete", post(crate::web::delete_messages))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("HTTP 服务监听 0.0.0.0:{port}");
