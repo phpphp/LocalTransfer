@@ -296,8 +296,7 @@ impl RootView {
             })
             // 弹性空隙：右侧内容顶到最右（传输进度只在消息流里，不占标题栏）
             .child(div().flex_1())
-            // 网页会话右侧：地址图标 + 二维码图标（都打开地址/二维码弹窗，
-            // 弹窗里地址可点击复制）
+            // 网页会话右侧：地址图标（打开地址/二维码弹窗，弹窗里地址可点击复制）
             .when(is_web, |el| {
                 el.child(
                     div()
@@ -309,19 +308,6 @@ impl RootView {
                         .text_color(cx.theme().muted_foreground)
                         .hover(|s| s.text_color(cx.theme().primary))
                         .child(Icon::new(IconName::Network).with_size(px(15.)))
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.show_web_qr = true;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    div()
-                        .id("hdr-web-qr")
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .cursor_pointer()
-                        .child(crate::sidebar::qr_svg(16., cx.theme().primary))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.show_web_qr = true;
                             cx.notify();
