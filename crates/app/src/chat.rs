@@ -93,7 +93,7 @@ impl RootView {
             .map(|d| d.info.plat.clone())
             .unwrap_or_else(|| "web".into());
         let name = if is_web {
-            "网页".to_string()
+            "HTTP Server".to_string()
         } else {
             self.peer_name(&peer)
         };
@@ -213,7 +213,7 @@ impl RootView {
         cancel_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // 右侧文字：在线显示地址，离线显示"离线"
+        // 右侧文字：在线显示地址，离线显示"离线"（仅普通设备会话）
         let tail = match (&addr, online) {
             (Some(a), true) => a.clone(),
             (None, true) => "在线".to_string(),
@@ -229,8 +229,26 @@ impl RootView {
             .gap_2p5()
             .border_b_1()
             .border_color(cx.theme().border)
-            // 首字头像（设备名首字）
-            .child(initial_avatar(name, 28., cx))
+            // 头像：网页会话 = 三维地球；设备 = 名字首字
+            .child(if is_web {
+                // 地球头像（与侧栏网页行同款主色调）
+                div()
+                    .flex_none()
+                    .size(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .bg(cx.theme().primary.opacity(0.18))
+                    .child(
+                        Icon::new(IconName::Globe)
+                            .with_size(px(15.))
+                            .text_color(cx.theme().primary),
+                    )
+                    .into_any_element()
+            } else {
+                initial_avatar(name, 28., cx).into_any_element()
+            })
             // 设备名（flex_1 吃掉中间空间，名字不被挤）
             .child(
                 div()
@@ -242,72 +260,94 @@ impl RootView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(name.to_string()),
             )
-            // 在线状态点
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(6.))
-                    .rounded_full()
-                    .when(online, |el| el.bg(cx.theme().success))
-                    .when(!online, |el| {
-                        el.bg(cx.theme().muted_foreground).opacity(0.4)
-                    }),
-            )
-            // 设备类型：图标 + 平台名紧贴（一组，flex_none）
-            .child(
-                h_flex()
-                    .flex_none()
-                    .gap_1()
-                    .child(crate::sidebar::plat_svg(
-                        plat,
-                        11.,
-                        if online {
-                            cx.theme().primary
-                        } else {
-                            cx.theme().muted_foreground
-                        },
-                    ))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(crate::sidebar::plat_label(plat)),
-                    ),
-            )
-            // 弹性空隙：地址顶到最右（传输进度只在消息流里，不占标题栏）
-            .child(div().flex_1())
-            // 地址（最右）：点击复制
-            .child(
-                div()
-                    .id("hdr-addr")
-                    .flex_none()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.text_color(cx.theme().primary))
-                    .child(tail.clone())
-                    .on_click({
-                        let addr = tail.clone();
-                        cx.listener(move |this, _ev, _window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(addr.clone()));
-                            this.toast("已复制地址", false);
-                        })
-                    }),
-            )
-            // 二维码（仅网页会话）
-            .when(is_web, |el| {
+            // 在线状态点 + 设备类型组：网页会话不显示（无"在线/平台"概念）
+            .when(!is_web, |el| {
                 el.child(
-                    Button::new("btn-web-qr")
-                        .ghost()
-                        .xsmall()
+                    div()
                         .flex_none()
-                        .label("二维码")
-                        .tooltip("手机扫码打开网页客户端")
+                        .size(px(6.))
+                        .rounded_full()
+                        .when(online, |el| el.bg(cx.theme().success))
+                        .when(!online, |el| {
+                            el.bg(cx.theme().muted_foreground).opacity(0.4)
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .child(crate::sidebar::plat_svg(
+                            plat,
+                            11.,
+                            if online {
+                                cx.theme().primary
+                            } else {
+                                cx.theme().muted_foreground
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(crate::sidebar::plat_label(plat)),
+                        ),
+                )
+            })
+            // 弹性空隙：右侧内容顶到最右（传输进度只在消息流里，不占标题栏）
+            .child(div().flex_1())
+            // 网页会话右侧：地址图标（点击复制）+ 二维码图标
+            .when(is_web, |el| {
+                let addr2 = addr.clone().unwrap_or_default();
+                el.child(
+                    div()
+                        .id("hdr-web-addr")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.text_color(cx.theme().primary))
+                        .child(Icon::new(IconName::Network).with_size(px(15.)))
+                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                            if !addr2.is_empty() {
+                                cx.write_to_clipboard(ClipboardItem::new_string(addr2.clone()));
+                                this.toast("已复制网页地址", false);
+                            }
+                        })),
+                )
+                .child(
+                    div()
+                        .id("hdr-web-qr")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .child(crate::sidebar::qr_svg(16., cx.theme().primary))
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             this.show_web_qr = !this.show_web_qr;
                             cx.notify();
                         })),
+                )
+            })
+            // 普通设备：地址文字（最右，点击复制）
+            .when(!is_web, |el| {
+                el.child(
+                    div()
+                        .id("hdr-addr")
+                        .flex_none()
+                        .text_xs()
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.text_color(cx.theme().primary))
+                        .child(tail.clone())
+                        .on_click({
+                            let addr = tail.clone();
+                            cx.listener(move |this, _ev, _window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(addr.clone()));
+                                this.toast("已复制地址", false);
+                            })
+                        }),
                 )
             })
             .into_any_element()

@@ -32,6 +32,52 @@ pub fn plat_label(plat: &str) -> String {
     }
 }
 
+/// 二维码图标（div 拼：三个定位角 + 散点；图标集没有 qr-code）。
+/// 与 plat_svg 同思路——gpui 的 svg() 只认资产路径。
+pub fn qr_svg(size: f32, color: Hsla) -> impl IntoElement {
+    // 定位角：外框 + 中心点
+    let eye = || {
+        div()
+            .size(px(size * 0.34))
+            .border_1()
+            .border_color(color)
+            .rounded(px(size * 0.07))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(div().size(px(size * 0.13)).bg(color).rounded(px(size * 0.03)))
+    };
+    let dot = || div().size(px(size * 0.12)).bg(color).rounded(px(size * 0.03));
+    v_flex()
+        .flex_none()
+        .size(px(size))
+        .justify_between()
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(eye())
+                .child(dot())
+                .child(eye()),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(dot())
+                .child(dot())
+                .child(dot()),
+        )
+        .child(
+            h_flex()
+                .w_full()
+                .justify_between()
+                .child(eye())
+                .child(dot())
+                .child(dot()),
+        )
+}
+
 /// 平台图标（div 拼几何形状——gpui 的 svg() 只认资产路径，data: URI 渲染为空）。
 /// 颜色跟主题；16px 座内 11px 主体。
 pub fn plat_svg(plat: &str, size: f32, color: Hsla) -> impl IntoElement {
@@ -334,7 +380,7 @@ impl RootView {
                     .w_full()
                     .truncate()
                     .text_sm()
-                    .child("网页"),
+                    .child("HTTP Server"),
             )
             .when(unread > 0, |el| {
                 el.child(
