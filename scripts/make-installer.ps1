@@ -5,7 +5,7 @@
 $ErrorAction = "Stop"
 Set-Location $PSScriptRoot\..
 
-$Version = "0.1.0"
+$Version = "0.2.0"
 $Iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 
 Write-Output "== 构建 release =="
