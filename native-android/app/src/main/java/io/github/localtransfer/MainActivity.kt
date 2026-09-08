@@ -126,14 +126,12 @@ class MainActivity : ComponentActivity() {
     }
 
     fun startScan() {
+        // 库默认竖屏扫码（SCAN_ORIENTATION_LOCKED 默认 true 锁竖屏），
+        // 不做任何方向定制
         scanLauncher.launch(ScanOptions().apply {
             setPrompt("对准电脑端二维码（http://IP:端口）")
             setBeepEnabled(false)
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setCaptureActivity(LandscapeCaptureActivity::class.java)
-            // 关掉库的"锁当前方向"（默认 true 会锁成竖屏），方向交给
-            // LandscapeCaptureActivity 的 sensorLandscape
-            setOrientationLocked(false)
         })
     }
 
