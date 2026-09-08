@@ -19,6 +19,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -179,8 +180,8 @@ object App {
     var autoReceive by mutableStateOf(false)
     /** 主题模式：null=跟随系统 */
     var themeMode by mutableStateOf<String?>(null)
-    /** 手机本机型号名（Build.MODEL，改名弹窗"使用本机设备名"用） */
-    val phoneModel: String by lazy { Build.MODEL ?: "" }
+    /** 本机设备名（系统"设备名称"，回落型号；改名弹窗"使用本机设备名"用） */
+    var phoneModel by mutableStateOf("")
     /** 速度采样表：token → (纳秒时间, 累计字节, 上次速度) */
     internal val speedSamples = HashMap<String, Triple<Long, Long, Double>>()
 
@@ -211,18 +212,25 @@ object App {
             id = UUID.randomUUID().toString()
             prefs.edit().putString("device_id", id).apply()
         }
-        // 默认设备名 = 手机型号（如 "Pixel 8"）；未存过时用型号，不落库
+        // 本机设备名：系统设置里的"设备名称"（用户自定义过的，API 25+）
+        // → 型号 Build.MODEL → 空字符串（键名用字面量避开 API 24 的常量 lint）
+        phoneModel = android.provider.Settings.Global
+            .getString(ctx.contentResolver, "device_name")
+            ?.trim()?.ifBlank { null }
+            ?: Build.MODEL.trim().ifBlank { null }
+            ?: ""
+        // 默认设备名 = 本机设备名；未存过时用它，不落库
         //（用户改过名 / 点过"随机"才持久化，保持系统名的动态性）
         themeMode = prefs.getString("theme_mode", null)
         val name = prefs.getString("device_name", null)
-            ?: Build.MODEL.ifBlank { randomPoeticName().also {
+            ?: phoneModel.ifBlank { randomPoeticName().also {
                 prefs.edit().putString("device_name", it).apply() } }
         autoReceive = prefs.getBoolean("auto_receive", false)
         me = DeviceInfo(id, name, "android", 0)
         api = TransferApi(me)
         server = MiniHttpServer(me, ctx, object : MiniHttpServer.Callbacks {
             override fun onMessage(peerId: String, peerName: String, text: String) {
-                chats.getOrPut(peerId) { mutableListOf() }
+                chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }
                     .add(ChatEntry.Text(false, text, System.currentTimeMillis()))
             }
             override fun onIncoming(req: IncomingReq) {
@@ -244,7 +252,7 @@ object App {
                         it.substringBeforeLast('/')
                     } ?: "Download/LocalTransfer"
                 val finalLocation = server.publishError ?: location
-                chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
+                chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
                     false,
                     if (files.size == 1) files[0].name else "${files.size} 个文件",
                     files.sumOf { it.size },
@@ -291,7 +299,7 @@ object App {
 
     fun sendText(peerId: String, text: String) {
         val p = peers.value[peerId] ?: return
-        chats.getOrPut(peerId) { mutableListOf() }
+        chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }
             .add(ChatEntry.Text(true, text, System.currentTimeMillis()))
         GlobalScope.launch(Dispatchers.IO) {
             runCatching { api.sendText(p, text) }
@@ -341,7 +349,7 @@ object App {
                     val sent = metas.map { m ->
                         ReceivedFile(m.first.name, m.first.size, null, m.second)
                     }
-                    chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
+                    chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
                         true, title, sum, System.currentTimeMillis(), null, sent))
                 }
             }.onFailure {
@@ -392,6 +400,8 @@ fun App() {
                         fmtSize(req.files.sumOf { it.size }),
                     color = MaterialTheme.colorScheme.onSurfaceVariant) },
                 confirmButton = { TextButton(onClick = {
+                    // 点接收 → 直接跳进对应会话（看进度），不用再手动找设备
+                    App.currentPeer = req.peer.id
                     req.decision.complete(true); App.pendingReq = null
                 }) { Text("接收") } },
                 dismissButton = { TextButton(onClick = {
@@ -852,7 +862,7 @@ fun ChatScreen(peerId: String) {
     val activity = ctx as? MainActivity
     val peers by App.peers.collectAsState()
     val peer = peers[peerId]
-    val msgs = remember(peerId) { App.chats.getOrPut(peerId) { mutableListOf() } }
+    val msgs = remember(peerId) { App.chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() } }
     var input by remember { mutableStateOf("") }
     val progresses = App.progress.values.filter { it.peerId == peerId }
 
@@ -913,7 +923,12 @@ fun ChatScreen(peerId: String) {
             LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp),
                 reverseLayout = false) {
                 items(msgs.size + progresses.size) { i ->
-                    if (i < msgs.size) MessageBubble(msgs[i])
+                    if (i < msgs.size) MessageBubble(msgs[i],
+                        onDelete = { en ->
+                            // 引用相等删这一条（值相等会误删同内容的重复消息）
+                            val idx = msgs.indexOfFirst { it === en }
+                            if (idx >= 0) msgs.removeAt(idx)
+                        })
                     else ProgressCard(progresses[i - msgs.size])
                 }
             }
@@ -952,9 +967,14 @@ fun ChatScreen(peerId: String) {
     }
 }
 
+/** 长按消息：文本=复制/删除，文件卡=删除 */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun MessageBubble(e: ChatEntry) {
+fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
+    val ctx = LocalContext.current
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
     val end = e.outgoing
+    var menu by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
         contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(
@@ -965,7 +985,15 @@ fun MessageBubble(e: ChatEntry) {
             color = if (end) IndigoDark
             else MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            Column(Modifier.padding(12.dp).widthIn(max = 280.dp)) {
+            Column(
+                Modifier.padding(12.dp).widthIn(max = 280.dp)
+                    .combinedClickable(
+                        interactionSource = remember {
+                            androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                        onLongClick = { menu = true },
+                    )) {
                 when (e) {
                     is ChatEntry.Text -> Text(e.text,
                         color = if (end) androidx.compose.ui.graphics.Color.White
@@ -995,15 +1023,34 @@ fun MessageBubble(e: ChatEntry) {
                 }
             }
         }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (e is ChatEntry.Text) {
+                DropdownMenuItem(
+                    text = { Text("复制") },
+                    onClick = {
+                        clip.setText(androidx.compose.ui.text.AnnotatedString(e.text))
+                        MainActivity.toast(ctx, "已复制")
+                        menu = false
+                    })
+            }
+            DropdownMenuItem(
+                text = { Text("删除") },
+                onClick = { menu = false; onDelete(e) })
+        }
     }
 }
 
 @Composable
 fun ProgressCard(p: RecvProgress) {
-    Surface(
-        shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
+    // 发送靠右、接收靠左（与完成后的文件卡同侧，不再"传完跳边"）
+    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        contentAlignment = if (p.sending) Alignment.CenterEnd else Alignment.CenterStart) {
+        Surface(
+            // 尖角朝发送方：右下（发送）/ 左下（接收）
+            shape = if (p.sending) RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
+                    else RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
         Column(Modifier.padding(12.dp).widthIn(max = 280.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("📁", fontSize = 18.sp)
@@ -1028,5 +1075,6 @@ fun ProgressCard(p: RecvProgress) {
                 color = Indigo,
             )
         }
+    }
     }
 }
