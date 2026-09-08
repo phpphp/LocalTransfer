@@ -3971,6 +3971,7 @@ dependencies = [
  "tracing",
  "transfer-core",
  "uuid",
+ "winreg",
  "winresource",
 ]
 

@@ -103,6 +103,55 @@ pub fn initial_avatar(name: &str, size: f32, cx: &App) -> Div {
         .child(short)
 }
 
+// ---------------------------------------------------------------- 开机启动
+// HKCU\...\Run 注册当前 exe 路径（per-user，无需管理员）
+
+const AUTOSTART_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const AUTOSTART_NAME: &str = "LocalTransfer";
+
+#[cfg(target_os = "windows")]
+pub fn autostart_enabled() -> bool {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(AUTOSTART_KEY)
+        .ok()
+        .and_then(|k| k.get_value::<String, _>(AUTOSTART_NAME).ok())
+        .is_some()
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_autostart(on: bool) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+    let run = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(AUTOSTART_KEY, KEY_READ | KEY_WRITE)
+        .context("打开注册表 Run 键失败")?;
+    if on {
+        let exe = std::env::current_exe().context("取程序路径失败")?;
+        run.set_value(AUTOSTART_NAME, &exe.to_string_lossy().to_string())
+            .context("写入开机启动失败")?;
+    } else {
+        match run.delete_value(AUTOSTART_NAME) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("移除开机启动失败"),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn autostart_enabled() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_autostart(_on: bool) -> anyhow::Result<()> {
+    anyhow::bail!("此平台不支持开机启动")
+}
+
 /// 待确认的接收请求（会话内的请求卡片数据）
 #[derive(Clone)]
 pub struct IncomingReq {
@@ -154,6 +203,9 @@ pub struct RootView {
 
     /// 网页客户端二维码弹窗
     pub show_web_qr: bool,
+
+    /// 开机启动（HKCU Run 键，启动时读一次）
+    pub autostart: bool,
 
     _keep: Vec<Subscription>,
 }
@@ -241,6 +293,7 @@ impl RootView {
             show_connect: false,
             connect_input,
             show_web_qr: false,
+            autostart: autostart_enabled(),
             _keep: vec![sub],
         };
         view

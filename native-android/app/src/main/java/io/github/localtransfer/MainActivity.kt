@@ -635,6 +635,55 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                     })
                 }
                 Spacer(Modifier.height(16.dp))
+                // 电池优化：后台持续接收的可靠性的关键（厂商省电会杀后台服务）
+                val pm = remember {
+                    ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                }
+                var battOptimizedOut by remember {
+                    mutableStateOf(pm.isIgnoringBatteryOptimizations(ctx.packageName))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("禁用电池优化", fontSize = 13.sp)
+                        Text(
+                            if (battOptimizedOut) "已加入白名单，后台接收不受省电限制"
+                            else "让后台接收不被系统省电杀掉",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    OutlinedButton(onClick = {
+                        if (battOptimizedOut) {
+                            MainActivity.toast(ctx, "已禁用电池优化")
+                        } else {
+                            // 返回后重查状态（用户可能点了允许）
+                            runCatching {
+                                ctx.startActivity(Intent(
+                                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${ctx.packageName}")))
+                            }.onFailure {
+                                MainActivity.toast(ctx, "无法打开：${it.message}")
+                            }
+                        }
+                    }) {
+                        Text(if (battOptimizedOut) "已禁用" else "去设置",
+                            fontSize = 12.sp)
+                    }
+                }
+                // 从系统页返回时刷新状态
+                val lifecycleOwner =
+                    androidx.compose.ui.platform.LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val lifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                            battOptimizedOut =
+                                pm.isIgnoringBatteryOptimizations(ctx.packageName)
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(lifecycleObserver) }
+                }
+                Spacer(Modifier.height(16.dp))
                 // 外观主题（null=跟随系统；putString(null) 即清除，回落跟随系统）
                 Row(Modifier.fillMaxWidth()) {
                     listOf(null to "跟随系统", "light" to "浅色", "dark" to "深色")

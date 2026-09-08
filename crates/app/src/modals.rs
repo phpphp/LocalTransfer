@@ -246,6 +246,48 @@ impl RootView {
                                     )),
                             ),
                     )
+                    // 开机启动：写 HKCU Run 键（注册当前 exe 路径，即时生效）
+                    .child(
+                        h_flex()
+                            .id("set-autostart")
+                            .w_full()
+                            .gap_2()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(div().text_sm().child("开机启动"))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(self.fg_muted(cx))
+                                            .child("登录 Windows 后自动运行"),
+                                    ),
+                            )
+                            .child(
+                                Switch::new("sw-autostart")
+                                    .checked(self.autostart)
+                                    .on_click(cx.listener(
+                                        |this, checked: &bool, _window, cx| {
+                                            match crate::root::set_autostart(*checked) {
+                                                Ok(()) => {
+                                                    this.autostart = *checked;
+                                                    this.toast(
+                                                        if *checked { "已开启开机启动" }
+                                                        else { "已关闭开机启动" },
+                                                        false,
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    this.toast(format!("设置失败: {e:#}"), true)
+                                                }
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                            ),
+                    )
                     .child(
                         h_flex()
                             .justify_end()
