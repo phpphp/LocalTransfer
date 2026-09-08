@@ -31,6 +31,8 @@ pub struct WebOffer {
     pub size: u64,
     pub path: PathBuf,
     pub created_at: i64,
+    /// 同一次发布共用的批次 id（= 消息 transfer_id；打包下载按它取整批）
+    pub transfer_id: String,
 }
 
 /// 把文件发布到网页：注册下载项 + 写入网页会话消息（电脑端聊天可见）。
@@ -49,6 +51,7 @@ pub fn web_offer(st: &ServerState, files: &[(FileMeta, PathBuf)]) -> usize {
             size: meta.size,
             path: path.clone(),
             created_at: now,
+            transfer_id: batch.clone(),
         });
         // 入库（outgoing，带源路径 → 电脑端"打开"可用；重启后仍在）
         let msg = (|| -> Option<ChatMessage> {
@@ -508,6 +511,144 @@ pub async fn remove(State(st): State<Arc<ServerState>>, Path(id): Path<String>) 
     StatusCode::OK.into_response()
 }
 
+// ---------------------------------------------------------------------------
+// GET /api/web/download-zip/{tid} —— 整批打包下载（Stored 不压缩，局域网重速度）
+// ---------------------------------------------------------------------------
+
+/// 流结束后（或客户端中断、body 被 drop）删掉临时 zip
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// 给 ReaderStream 套一层持有 guard 的包装流（Unpin 即可，不引 pin-project）
+struct CleanupStream<S> {
+    inner: S,
+    _guard: TempFileGuard,
+}
+impl<S> futures::Stream for CleanupStream<S>
+where
+    S: futures::Stream + Unpin,
+{
+    type Item = S::Item;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        futures::Stream::poll_next(std::pin::Pin::new(&mut self.inner), cx)
+    }
+}
+
+fn write_zip(out: &std::path::Path, files: &[(String, PathBuf)]) -> anyhow::Result<()> {
+    let f = std::fs::File::create(out)?;
+    let mut w = std::io::BufWriter::new(f);
+    let mut zip = zip::ZipWriter::new(&mut w);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    for (rel, path) in files {
+        zip.start_file(rel.as_str(), opts)?;
+        let mut src = std::fs::File::open(path)?;
+        std::io::copy(&mut src, &mut zip)?;
+    }
+    zip.finish()?;
+    Ok(())
+}
+
+pub async fn download_zip(State(st): State<Arc<ServerState>>, Path(tid): Path<String>) -> Response {
+    let files: Vec<(String, PathBuf)> = st
+        .web_offers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|o| o.transfer_id == tid)
+        .map(|o| (o.rel.clone(), o.path.clone()))
+        .collect();
+    if files.is_empty() {
+        return crate::server::err_response(StatusCode::NOT_FOUND, "没有可下载的文件（可能已失效）");
+    }
+    let folder = files[0]
+        .0
+        .split('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("LocalTransfer")
+        .to_string();
+    let zip_path = std::env::temp_dir().join(format!("ltweb-{}.zip", uuid::Uuid::new_v4()));
+    let zp = zip_path.clone();
+    let packed = tokio::task::spawn_blocking(move || write_zip(&zp, &files)).await;
+    match packed {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            let _ = std::fs::remove_file(&zip_path);
+            return crate::server::err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("打包失败: {e:#}"),
+            );
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&zip_path);
+            return crate::server::err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("打包任务失败: {e}"),
+            );
+        }
+    }
+    let file = match tokio::fs::File::open(&zip_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&zip_path);
+            return crate::server::err_response(StatusCode::NOT_FOUND, &format!("打开打包失败: {e}"));
+        }
+    };
+    let len = tokio::fs::metadata(&zip_path).await.map(|m| m.len()).unwrap_or(0);
+    let encoded = percent_encode(&format!("{folder}.zip"));
+    let fallback = folder.replace('"', "_").replace('\n', "_");
+    let stream = CleanupStream {
+        inner: tokio_util::io::ReaderStream::new(file),
+        _guard: TempFileGuard(zip_path),
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{fallback}.zip\"; filename*=UTF-8''{encoded}"),
+            ),
+            (header::CONTENT_LENGTH, len.to_string()),
+        ],
+        Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/web/messages/delete —— 删除消息（body: {"ids":[...]}）
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct DeleteMessagesBody {
+    pub ids: Vec<i64>,
+}
+
+pub async fn delete_messages(
+    State(st): State<Arc<ServerState>>,
+    axum::Json(body): axum::Json<DeleteMessagesBody>,
+) -> Response {
+    if body.ids.is_empty() {
+        return (StatusCode::OK, Json(serde_json::json!({"deleted": 0}))).into_response();
+    }
+    let n = st
+        .store
+        .lock()
+        .ok()
+        .and_then(|s| s.delete_messages(&body.ids).ok())
+        .unwrap_or(0);
+    (StatusCode::OK, Json(serde_json::json!({"deleted": n}))).into_response()
+}
+
 /// 接收页 HTML（__DEVICE_NAME__ 会被替换为设备名）。
 /// 结构：消息流（文本气泡 + 文件卡片）+ 输入行（文本/文件/文件夹）。
 const WEB_PAGE: &str = r#"<!DOCTYPE html>
@@ -583,6 +724,17 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
   .sheet .body { overflow-y: auto; padding: 0 12px 12px; }
   .sheet .fitem2 { padding: 8px 4px; border-top: 1px solid rgba(127,127,127,.12); }
   .sheet .fitem2:first-child { border-top: 0; }
+  .zipbtn { border: 1px solid rgba(99,102,241,.5); border-radius: 8px; padding: 6px 10px;
+            font-size: 12px; cursor: pointer; color: #6366f1; text-decoration: none;
+            display: inline-block; flex: none; }
+  .zipbtn:hover { background: rgba(99,102,241,.12); }
+  .spd { min-height: 15px; }
+  .cmenu { position: fixed; z-index: 30; background: #fff; color: #1f2328; border-radius: 10px;
+           box-shadow: 0 6px 24px rgba(0,0,0,.22); padding: 4px; min-width: 120px; }
+  @media (prefers-color-scheme: dark) { .cmenu { background: #2a2c33; color: #e6e8eb; } }
+  .citem { padding: 8px 14px; font-size: 13px; border-radius: 7px; cursor: pointer; }
+  .citem:hover { background: rgba(127,127,127,.14); }
+  .citem.danger { color: #dc2626; }
 </style>
 </head>
 <body>
@@ -644,10 +796,11 @@ function addMessage(m) {
       b = batches[m.tid] = { files: [], outgoing: m.outgoing,
                              el: document.createElement("div") };
       b.el.className = "row " + (m.outgoing ? "" : "out");
-      msgsEl.appendChild(b.el);
     }
     b.files.push(m);
-    drawBatch(b);
+    // 上传进行中的批（pending）不画卡——完成时一次性显示，
+    // 避免"进度卡 + 半成品批卡"两行并存
+    if (!b.pending) drawBatch(b);
   } else {
     msgsEl.appendChild(renderFileCard(m));
   }
@@ -675,9 +828,22 @@ function drawBatch(b) {
     meta.appendChild(nm); meta.appendChild(sz);
     c.appendChild(icon); c.appendChild(meta);
     c.onclick = function() { openFolder(name, files); };
+    // 有可下载文件 → 打包下载整批
+    if (files.some(function(f){ return f.offer; })) {
+      var z = document.createElement("a");
+      z.className = "zipbtn"; z.textContent = "📦 打包下载";
+      z.setAttribute("download", "");
+      z.href = "/api/web/download-zip/" + encodeURIComponent(files[0].tid);
+      z.onclick = function(e) { e.stopPropagation(); };
+      c.appendChild(z);
+    }
   } else {
     c = fileCardEl(files[0]);
   }
+  // 右键：删除整批
+  var ids = files.map(function(f){ return f.id; });
+  attachMenu(c, [menuDel(function(){ deleteMsg(ids, b.el, b); })]);
+  if (!b.el.parentNode) msgsEl.appendChild(b.el);
   b.el.replaceChildren(c);
 }
 
@@ -723,6 +889,11 @@ function renderText(m) {
   b.className = "bub bub-in";
   b.textContent = m.text;
   row.appendChild(b);
+  // 右键：复制 / 删除
+  attachMenu(b, [
+    { label: "复制", fn: function() { copyText(m.text); } },
+    menuDel(function() { deleteMsg([m.id], row, null); }),
+  ]);
   return row;
 }
 
@@ -731,7 +902,64 @@ function renderFileCard(m) {
   var row = document.createElement("div");
   row.className = "row " + (m.outgoing ? "" : "out");
   row.appendChild(fileCardEl(m));
+  // 右键：删除
+  attachMenu(row, [menuDel(function(){ deleteMsg([m.id], row, null); })]);
   return row;
+}
+
+// ---------------------------------------------------------------- 右键菜单
+var menuEl = null;
+function closeMenu() {
+  if (menuEl) { menuEl.remove(); menuEl = null; }
+}
+document.addEventListener("click", closeMenu);
+window.addEventListener("blur", closeMenu);
+/// item：{label, fn}
+function attachMenu(el, items) {
+  el.addEventListener("contextmenu", function(e) {
+    e.preventDefault(); e.stopPropagation();
+    closeMenu();
+    menuEl = document.createElement("div");
+    menuEl.className = "cmenu";
+    for (var i = 0; i < items.length; i++) {
+      var it = document.createElement("div");
+      it.className = "citem" + (items[i].danger ? " danger" : "");
+      it.textContent = items[i].label;
+      it.onclick = items[i].fn;
+      menuEl.appendChild(it);
+    }
+    document.body.appendChild(menuEl);
+    var x = Math.min(e.clientX, window.innerWidth - menuEl.offsetWidth - 8);
+    var y = Math.min(e.clientY, window.innerHeight - menuEl.offsetHeight - 8);
+    menuEl.style.left = Math.max(8, x) + "px";
+    menuEl.style.top = Math.max(8, y) + "px";
+  });
+}
+function menuDel(fn) { return { label: "删除", danger: true, fn: fn }; }
+
+/// 删除消息（服务器 + DOM；批卡顺带清 batches 登记）
+function deleteMsg(ids, el, b) {
+  fetch("/api/web/messages/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: ids })
+  }).then(function() { el.remove(); }).catch(function(){});
+  if (b) {
+    for (var k in batches) {
+      if (batches[k] === b) { delete batches[k]; break; }
+    }
+  }
+}
+
+/// 复制文本（http 非 secure context 没有 navigator.clipboard，用 execCommand）
+function copyText(t) {
+  var ta = document.createElement("textarea");
+  ta.value = t;
+  ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (e) {}
+  ta.remove();
 }
 
 /// 文件卡元素（批卡的单文件形态也用它）
@@ -778,24 +1006,34 @@ function uploadFiles(files) {
   var arr = Array.prototype.slice.call(files);
   if (!arr.length) return;
   var batch = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  // 批登记为 pending：上传中不渲染批卡（避免与进度卡两行并存），
+  // 完成后一次性显示以文件夹名命名的卡片
+  var pb = batches[batch] = { files: [], outgoing: false,
+                              el: document.createElement("div"), pending: true };
+  pb.el.className = "row out";
   var cur = document.createElement("div");
   cur.className = "row out";
   cur.innerHTML = '<div class="fcard"><div class="ficon">&#9207;</div><div class="fmeta">' +
     '<div class="fname">正在发送 ' + arr.length + ' 个文件…</div>' +
+    '<div class="fsize spd"></div>' +
     '<div class="prog"><div></div></div></div></div>';
   msgsEl.appendChild(cur);
   msgsEl.scrollTop = msgsEl.scrollHeight;
   var bar = cur.querySelector(".prog > div");
   var nameEl = cur.querySelector(".fname");
+  var speedEl = cur.querySelector(".spd");
   var total = arr.reduce(function(s, f){ return s + f.size; }, 0), done = 0;
   var failed = 0;
+  var lastT = 0, lastB = 0;   // 速度采样（400ms 窗口）
   function next(i) {
     if (i >= arr.length) {
-      // 全部完成：拉回服务器消息渲染成正式卡片；成功则移除进度卡
-      // （旧版不移除 → "正在发送"和文件名同时占两行）
+      // 全部完成：拉回服务器消息，一次性显示批卡；成功则移除进度卡
       refresh().then(function() {
+        pb.pending = false;
+        if (pb.files.length) drawBatch(pb); else delete batches[batch];
         if (failed) nameEl.textContent = "发送完成（" + failed + " 个失败）";
         else if (cur.parentNode) cur.remove();
+        msgsEl.scrollTop = msgsEl.scrollHeight;
       });
       return;
     }
@@ -808,6 +1046,12 @@ function uploadFiles(files) {
     xhr.upload.onprogress = function(ev) {
       if (ev.lengthComputable) {
         bar.style.width = Math.round(((done + ev.loaded) / total) * 100) + "%";
+        var now = Date.now(), curB = done + ev.loaded;
+        if (now - lastT >= 400) {
+          if (lastT > 0 && curB > lastB)
+            speedEl.textContent = fmt((curB - lastB) / ((now - lastT) / 1000)) + "/s";
+          lastT = now; lastB = curB;
+        }
       }
     };
     xhr.onloadend = function() {
