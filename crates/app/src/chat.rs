@@ -624,21 +624,25 @@ impl RootView {
                         div()
                             .id(SharedString::from(format!("msg-{}", msg.id)))
                             .min_w_0()
-                            .when(!mine, |el| {
-                                el.cursor_pointer().on_click(cx.listener(
-                                    move |this, _ev, _window, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            text_for_copy.clone(),
-                                        ));
-                                        this.toast("已复制到剪贴板", false);
+                            // 双击复制（收发两侧都是；单击不响应）
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(
+                                    move |this, ev: &MouseDownEvent, _window, cx| {
+                                        if ev.click_count >= 2 {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                text_for_copy.clone(),
+                                            ));
+                                            this.toast("已复制到剪贴板", false);
+                                        }
                                     },
-                                ))
-                            })
+                                ),
+                            )
                             .context_menu(move |menu, _window, _cx| {
                                 let (h, t, p) =
                                     (handle.clone(), text_for_menu.clone(), peer_id.clone());
                                 menu.item(
-                                    PopupMenuItem::label("复制").on_click(
+                                    PopupMenuItem::new("复制").on_click(
                                         move |_ev, _window, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 t.clone(),
@@ -646,7 +650,7 @@ impl RootView {
                                         },
                                     ),
                                 )
-                                .item(PopupMenuItem::label("删除").on_click(
+                                .item(PopupMenuItem::new("删除").on_click(
                                     move |_ev, _window, cx| {
                                         h.update(cx, |this, cx| {
                                             this.delete_messages(&p, &[msg_id], cx)
@@ -698,7 +702,7 @@ impl RootView {
                             .min_w_0()
                             .context_menu(move |menu, _window, _cx| {
                                 let (h, p) = (handle.clone(), peer_id.clone());
-                                menu.item(PopupMenuItem::label("删除").on_click(
+                                menu.item(PopupMenuItem::new("删除").on_click(
                                     move |_ev, _window, cx| {
                                         h.update(cx, |this, cx| {
                                             this.delete_messages(&p, &[msg_id], cx)
@@ -955,7 +959,7 @@ impl RootView {
                                 .context_menu(move |menu, _window, _cx| {
                                     let (h, p, ids) =
                                         (handle.clone(), peer_id.clone(), ids.clone());
-                                    menu.item(PopupMenuItem::label("删除").on_click(
+                                    menu.item(PopupMenuItem::new("删除").on_click(
                                         move |_ev, _window, cx| {
                                             h.update(cx, |this, cx| {
                                                 this.delete_messages(&p, &ids, cx)
