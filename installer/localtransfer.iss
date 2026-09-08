@@ -4,7 +4,7 @@
 ;       旧版本检测/覆盖升级由 Inno 按 AppId+Version 自动处理。
 
 #define MyAppName "LocalTransfer"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppExeName "local-transfer.exe"
 #define MyAppPublisher "LocalTransfer"
 #define MyAppDescription "LocalTransfer - LAN file & text transfer"
