@@ -12,6 +12,7 @@ use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::message::{Message, MessageAlignment, MessageContent, MessageFooter};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Sizable as _};
@@ -607,6 +608,11 @@ impl RootView {
         let bubble = match &msg.kind {
             MessageKind::Text(text) => {
                 let text_for_copy = text.clone();
+                // 右键菜单：复制 / 删除（收发两侧都有）
+                let text_for_menu = text.clone();
+                let peer_id = msg.peer_id.clone();
+                let msg_id = msg.id;
+                let handle = cx.entity();
                 Bubble::new()
                     .alignment(align)
                     .with_variant(if mine {
@@ -625,6 +631,26 @@ impl RootView {
                                             text_for_copy.clone(),
                                         ));
                                         this.toast("已复制到剪贴板", false);
+                                    },
+                                ))
+                            })
+                            .context_menu(move |menu, _window, _cx| {
+                                let (h, t, p) =
+                                    (handle.clone(), text_for_menu.clone(), peer_id.clone());
+                                menu.item(
+                                    PopupMenuItem::label("复制").on_click(
+                                        move |_ev, _window, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                t.clone(),
+                                            ));
+                                        },
+                                    ),
+                                )
+                                .item(PopupMenuItem::label("删除").on_click(
+                                    move |_ev, _window, cx| {
+                                        h.update(cx, |this, cx| {
+                                            this.delete_messages(&p, &[msg_id], cx)
+                                        });
                                     },
                                 ))
                             })
@@ -650,10 +676,12 @@ impl RootView {
                 saved_path,
                 transfer_id,
                 file_id,
-            } => Bubble::new()
-                .alignment(align)
-                .with_variant(BubbleVariant::Outline)
-                .child(self.file_card(
+            } => {
+                // 右键菜单：删除（文件消息不提供复制）
+                let peer_id = msg.peer_id.clone();
+                let msg_id = msg.id;
+                let handle = cx.entity();
+                let card = self.file_card(
                     name,
                     *size,
                     saved_path.clone(),
@@ -661,7 +689,26 @@ impl RootView {
                     file_id.as_deref(),
                     mine,
                     cx,
-                )),
+                );
+                Bubble::new()
+                    .alignment(align)
+                    .with_variant(BubbleVariant::Outline)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .context_menu(move |menu, _window, _cx| {
+                                let (h, p) = (handle.clone(), peer_id.clone());
+                                menu.item(PopupMenuItem::label("删除").on_click(
+                                    move |_ev, _window, cx| {
+                                        h.update(cx, |this, cx| {
+                                            this.delete_messages(&p, &[msg_id], cx)
+                                        });
+                                    },
+                                ))
+                            })
+                            .child(card),
+                    )
+            }
         };
 
         Message::new()
@@ -890,6 +937,11 @@ impl RootView {
             ),
         };
 
+        // 右键菜单：删除整批（一次传输的所有文件消息）
+        let ids: Vec<i64> = msgs.iter().map(|m| m.id).collect();
+        let peer_id = first.peer_id.clone();
+        let handle = cx.entity();
+
         Message::new()
             .alignment(align)
             .content(
@@ -897,7 +949,22 @@ impl RootView {
                     Bubble::new()
                         .alignment(align)
                         .with_variant(BubbleVariant::Outline)
-                        .child(card),
+                        .child(
+                            div()
+                                .min_w_0()
+                                .context_menu(move |menu, _window, _cx| {
+                                    let (h, p, ids) =
+                                        (handle.clone(), peer_id.clone(), ids.clone());
+                                    menu.item(PopupMenuItem::label("删除").on_click(
+                                        move |_ev, _window, cx| {
+                                            h.update(cx, |this, cx| {
+                                                this.delete_messages(&p, &ids, cx)
+                                            });
+                                        },
+                                    ))
+                                })
+                                .child(card),
+                        )
                 ),
             )
             .footer(

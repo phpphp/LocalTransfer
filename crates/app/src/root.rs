@@ -564,6 +564,21 @@ impl RootView {
         self.chats.entry(peer).or_default().push(msg);
     }
 
+    /// 删除消息（右键菜单）：UI 直写 WAL 库（与 core 并发安全），
+    /// 同时清会话缓存。批次卡片传整组的 id。
+    pub fn delete_messages(&mut self, peer: &str, ids: &[i64], cx: &mut Context<Self>) {
+        if let Ok(s) = self.store.lock() {
+            if let Err(e) = s.delete_messages(ids) {
+                tracing::warn!("删除消息失败: {e:#}");
+            }
+        }
+        if let Some(msgs) = self.chats.get_mut(peer) {
+            msgs.retain(|m| !ids.contains(&m.id));
+        }
+        self.sync_scroller(cx);
+        cx.notify();
+    }
+
     /// OS 文件拖放的统一入口（root 与聊天面板都会调用；gpui 会在第一个
     /// 处理者里 take 掉 active_drag，所以不会重复发送）
     pub fn handle_external_drop(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {

@@ -224,6 +224,18 @@ impl Store {
         Ok(())
     }
 
+    /// 删除消息（右键菜单；批次卡片一次删整组，通常 1~几十条）
+    pub fn delete_messages(&self, ids: &[i64]) -> Result<usize> {
+        let mut n = 0;
+        for id in ids {
+            n += self
+                .conn
+                .execute("DELETE FROM messages WHERE id=?1", rusqlite::params![id])
+                .context("删除消息失败")?;
+        }
+        Ok(n)
+    }
+
     /// 倒序取最近 limit 条，再翻回时间正序
     pub fn load_history(&self, peer_id: &str, limit: i64) -> Result<Vec<ChatMessage>> {
         let mut stmt = self
