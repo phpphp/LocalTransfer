@@ -143,6 +143,53 @@ class MainActivity : ComponentActivity() {
                 android.widget.Toast.LENGTH_SHORT).show()
         }
 
+        /** 跳厂商"自启动 / 允许后台活动"管理页。
+         *  各家都是私有页面（无标准 API），按厂商逐个尝试，兜底应用详情页。
+         *  返回 false = 一个都没打开。 */
+        fun jumpAutoStart(context: Context): Boolean {
+            val m = Build.MANUFACTURER.lowercase()
+            val candidates = mutableListOf<Intent>()
+            when {
+                m.contains("xiaomi") || m.contains("redmi") -> candidates += Intent()
+                    .setComponent(android.content.ComponentName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.autostart.AutoStartManagementActivity"))
+                m.contains("huawei") || m.contains("honor") -> candidates += Intent()
+                    .setComponent(android.content.ComponentName(
+                        "com.huawei.systemmanager",
+                        "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"))
+                m.contains("oppo") || m.contains("realme") || m.contains("oneplus") -> {
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.coloros.safecenter",
+                        "com.coloros.safecenter.permission.startup.StartupAppListActivity"))
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.oppo.safe",
+                        "com.oppo.safe.permission.startup.StartupAppListActivity"))
+                }
+                m.contains("vivo") || m.contains("iqoo") -> {
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.vivo.permissionmanager",
+                        "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"))
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.iqoo.secure",
+                        "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"))
+                }
+                m.contains("meizu") -> candidates += Intent(
+                    "com.meizu.safe.security.SHOW_APPSEC")
+                    .putExtra("packageName", context.packageName)
+            }
+            // 兜底：应用详情页（原生/未识别厂商，用户手动找权限项）
+            candidates += Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}"))
+            for (i in candidates) {
+                if (runCatching {
+                        context.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }.isSuccess) return true
+            }
+            return false
+        }
+
         fun qrBitmap(content: String, size: Int = 512): Bitmap? = runCatching {
             val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE,
                 size, size, mapOf(EncodeHintType.MARGIN to 1))
@@ -682,6 +729,23 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                     }
                     lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
                     onDispose { lifecycleOwner.lifecycle.removeObserver(lifecycleObserver) }
+                }
+                Spacer(Modifier.height(12.dp))
+                // 允许后台活动（厂商私有页，跳系统设置开启自启/后台权限）
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("允许后台活动", fontSize = 13.sp)
+                        Text("跳到系统页开启自启动 / 后台运行权限",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    OutlinedButton(onClick = {
+                        if (!MainActivity.jumpAutoStart(ctx))
+                            MainActivity.toast(ctx, "未能打开系统设置页")
+                    }) {
+                        Text("去开启", fontSize = 12.sp)
+                    }
                 }
                 Spacer(Modifier.height(16.dp))
                 // 外观主题（null=跟随系统；putString(null) 即清除，回落跟随系统）
