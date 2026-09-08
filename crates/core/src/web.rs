@@ -188,9 +188,9 @@ pub async fn messages(
                 MessageKind::File {
                     name,
                     size,
+                    saved_path,
                     transfer_id,
                     file_id,
-                    ..
                 } => {
                     let fid = file_id.clone().unwrap_or_default();
                     match live.get(&fid) {
@@ -203,16 +203,27 @@ pub async fn messages(
                             o_rel.clone(),
                             fid,
                         ),
-                        // offer 已失效（重启/移除）：仍有批次与名字，无下载
-                        None => (
-                            "file",
-                            String::new(),
-                            name.clone(),
-                            *size,
-                            transfer_id.clone().unwrap_or_default(),
-                            String::new(),
-                            String::new(),
-                        ),
+                        // offer 已失效（重启/移除）或浏览器上传的消息（本就无 offer）：
+                        // 从落盘路径反推 rel（下载目录/网页上传/<rel>），
+                        // 浏览器端凭它显示文件夹名
+                        None => {
+                            let upload_root = st.default_download_dir.join(WEB_UPLOAD_DIR);
+                            let rel = saved_path
+                                .as_deref()
+                                .and_then(|p| p.strip_prefix(&upload_root).ok())
+                                .filter(|p| !p.as_os_str().is_empty())
+                                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                                .unwrap_or_default();
+                            (
+                                "file",
+                                String::new(),
+                                name.clone(),
+                                *size,
+                                transfer_id.clone().unwrap_or_default(),
+                                rel,
+                                String::new(),
+                            )
+                        }
                     }
                 }
             };
@@ -556,6 +567,22 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
   #send { background: #6366f1; color: #fff; border-radius: 10px; padding: 9px 16px; border: 0;
           font-size: 14px; cursor: pointer; flex: none; }
   #empty { text-align: center; opacity: .45; font-size: 13px; margin: auto; padding: 0 24px; line-height: 1.8; }
+  .fclick { cursor: pointer; }
+  .fclick:hover { border-color: rgba(99,102,241,.55); }
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+           align-items: center; justify-content: center; z-index: 10; padding: 20px; }
+  #modal.show { display: flex; }
+  .sheet { background: #fff; color: #1f2328; border-radius: 14px; max-width: 420px; width: 100%;
+           max-height: 70vh; display: flex; flex-direction: column; overflow: hidden;
+           box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+  @media (prefers-color-scheme: dark) {
+    .sheet { background: #26282e; color: #e6e8eb; }
+  }
+  .sheet h3 { font-size: 14px; padding: 14px 16px 10px; display: flex; align-items: center; gap: 8px; }
+  .sheet h3 .cnt { font-size: 11px; opacity: .5; font-weight: normal; }
+  .sheet .body { overflow-y: auto; padding: 0 12px 12px; }
+  .sheet .fitem2 { padding: 8px 4px; border-top: 1px solid rgba(127,127,127,.12); }
+  .sheet .fitem2:first-child { border-top: 0; }
 </style>
 </head>
 <body>
@@ -564,6 +591,12 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
   <div class="sub">LocalTransfer 网页客户端 · 与电脑互发文字和文件</div>
 </header>
 <div id="msgs"><div id="empty">和电脑端互发消息、文件、文件夹<br>电脑端「发送到网页」的文件会出现在这里</div></div>
+<div id="modal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="sheet">
+    <h3 id="mtitle"></h3>
+    <div class="body" id="mlist"></div>
+  </div>
+</div>
 <div id="inputbar">
   <button class="ibtn" title="发送文件" onclick="document.getElementById('fpick').click()">&#128206;</button>
   <button class="ibtn" title="发送文件夹" onclick="document.getElementById('dpick').click()">&#128193;</button>
@@ -584,104 +617,144 @@ function fmtTime(t) { var d = new Date(t); return d.toTimeString().slice(0,5); }
 function esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
 function refresh() {
-  fetch("/api/web/messages?since=" + lastId).then(function(r){ return r.json(); }).then(function(list) {
+  return fetch("/api/web/messages?since=" + lastId).then(function(r){ return r.json(); }).then(function(list) {
     if (!list.length) return;
     var e = document.getElementById("empty"); if (e) e.remove();
-    // 相邻同批（tid）的文件消息合并为一张文件夹卡
-    var i = 0;
-    while (i < list.length) {
+    for (var i = 0; i < list.length; i++) {
       var m = list[i];
       if (m.id > lastId) lastId = m.id;
-      if (known[m.id]) { i++; continue; }
+      if (known[m.id]) continue;
       known[m.id] = true;
-      if (m.kind === "file" && m.tid && i + 1 < list.length &&
-          list[i+1].kind === "file" && list[i+1].tid === m.tid) {
-        var group = [];
-        while (i < list.length && list[i].kind === "file" && list[i].tid === m.tid) {
-          if (list[i].id > lastId) lastId = list[i].id;
-          known[list[i].id] = true;
-          group.push(list[i]);
-          i++;
-        }
-        msgsEl.appendChild(renderFolder(group));
-      } else {
-        msgsEl.appendChild(render(m));
-        i++;
-      }
+      addMessage(m);
     }
     msgsEl.scrollTop = msgsEl.scrollHeight;
   }).catch(function(){});
 }
 
-/// 文件夹卡：文件夹名（rel 首段）+ 逐文件下载列表
-function renderFolder(group) {
-  var row = document.createElement("div");
-  row.className = "row " + (group[0].outgoing ? "" : "out");
-  var c = document.createElement("div");
-  c.className = "fcard ffolder";
-  var icon = document.createElement("div"); icon.className = "ficon"; icon.innerHTML = "&#128193;";
-  var meta = document.createElement("div"); meta.className = "fmeta";
-  var total = 0; for (var k = 0; k < group.length; k++) total += group[k].size;
-  var folder = group[0].rel.split("/")[0] || (group.length + " 个文件");
-  var nm = document.createElement("div"); nm.className = "fname"; nm.textContent = folder;
-  var sz = document.createElement("div"); sz.className = "fsize";
-  sz.textContent = group.length + " 个文件 · " + fmt(total) + " · " + fmtTime(group[0].created_at);
-  meta.appendChild(nm); meta.appendChild(sz);
-  var head = document.createElement("div");
-  head.appendChild(icon); head.appendChild(meta);
-  c.appendChild(head);
-  var list = document.createElement("div"); list.className = "flist";
-  for (var k = 0; k < group.length; k++) {
+// 批次归并：同 tid 的文件消息共用一张卡。必须跨轮询稳定——
+// 上传逐文件完成、轮询可能分次拿到（旧版只合并同一次响应里的相邻消息，
+// 批次被轮询撕碎后每个文件一行）
+var batches = {};   // tid -> { el, files, outgoing }
+
+function addMessage(m) {
+  if (m.kind === "text") { msgsEl.appendChild(renderText(m)); return; }
+  if (m.tid) {
+    var b = batches[m.tid];
+    if (!b) {
+      b = batches[m.tid] = { files: [], outgoing: m.outgoing,
+                             el: document.createElement("div") };
+      b.el.className = "row " + (m.outgoing ? "" : "out");
+      msgsEl.appendChild(b.el);
+    }
+    b.files.push(m);
+    drawBatch(b);
+  } else {
+    msgsEl.appendChild(renderFileCard(m));
+  }
+}
+
+/// 批卡重绘：1 个无目录文件=普通单文件卡；≥2 个或带目录=文件夹卡（点击弹窗看清单）
+function drawBatch(b) {
+  var files = b.files;
+  var withDir = false, total = 0;
+  for (var k = 0; k < files.length; k++) {
+    if (files[k].rel && files[k].rel.indexOf("/") >= 0) withDir = true;
+    total += files[k].size;
+  }
+  var c;
+  if (files.length > 1 || withDir) {
+    var name = withDir ? files[0].rel.split("/")[0] : (files.length + " 个文件");
+    c = document.createElement("div");
+    c.className = "fcard fclick";
+    var icon = document.createElement("div"); icon.className = "ficon"; icon.innerHTML = "&#128193;";
+    var meta = document.createElement("div"); meta.className = "fmeta";
+    var nm = document.createElement("div"); nm.className = "fname"; nm.textContent = name;
+    var sz = document.createElement("div"); sz.className = "fsize";
+    sz.textContent = files.length + " 个文件 · " + fmt(total) + " · " +
+                     fmtTime(files[0].created_at) + " · 点击查看";
+    meta.appendChild(nm); meta.appendChild(sz);
+    c.appendChild(icon); c.appendChild(meta);
+    c.onclick = function() { openFolder(name, files); };
+  } else {
+    c = fileCardEl(files[0]);
+  }
+  b.el.replaceChildren(c);
+}
+
+/// 文件夹弹窗：标题 + 逐文件（下载 / 已失效 / 大小）
+function openFolder(name, files) {
+  var total = 0; for (var k = 0; k < files.length; k++) total += files[k].size;
+  var mt = document.getElementById("mtitle");
+  mt.innerHTML = "&#128193; " + esc(name) +
+    ' <span class="cnt">' + files.length + " 个文件 · " + fmt(total) + "</span>";
+  var ml = document.getElementById("mlist");
+  ml.textContent = "";
+  for (var k = 0; k < files.length; k++) {
+    var f = files[k];
     var it = document.createElement("div"); it.className = "fitem2";
     var d = document.createElement("div"); d.className = "finame";
-    d.textContent = group[k].rel && group[k].rel.indexOf("/") >= 0 ? group[k].rel.slice(group[k].rel.indexOf("/") + 1) : group[k].name;
+    d.textContent = f.rel && f.rel.indexOf("/") >= 0
+      ? f.rel.slice(f.rel.indexOf("/") + 1) : f.name;
+    d.title = d.textContent;
     var dl = document.createElement("div"); dl.className = "fidl";
-    if (group[k].offer) {
+    if (f.offer) {
       var a = document.createElement("a");
-      a.textContent = "下载"; a.setAttribute("download", ""); a.href = "/api/web/download/" + group[k].offer;
+      a.textContent = "下载"; a.setAttribute("download", "");
+      a.href = "/api/web/download/" + f.offer;
       dl.appendChild(a);
-    } else if (group[k].outgoing) {
+    } else if (f.outgoing) {
       dl.textContent = "已失效"; dl.className = "exp";
+    } else {
+      dl.textContent = fmt(f.size);
     }
     it.appendChild(d); it.appendChild(dl);
-    list.appendChild(it);
+    ml.appendChild(it);
   }
-  c.appendChild(list);
-  row.appendChild(c);
+  document.getElementById("modal").classList.add("show");
+}
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape") document.getElementById("modal").classList.remove("show");
+});
+
+function renderText(m) {
+  var row = document.createElement("div");
+  row.className = "row " + (m.outgoing ? "" : "out");
+  var b = document.createElement("div");
+  b.className = "bub bub-in";
+  b.textContent = m.text;
+  row.appendChild(b);
   return row;
 }
 
-function render(m) {
+/// 单个无批次文件的消息行
+function renderFileCard(m) {
   var row = document.createElement("div");
-  // outgoing = 电脑端视角；浏览器自己的消息（outgoing=false）在右侧
   row.className = "row " + (m.outgoing ? "" : "out");
-  if (m.kind === "text") {
-    var b = document.createElement("div");
-    b.className = "bub bub-in";
-    b.textContent = m.text;
-    row.appendChild(b);
-  } else {
-    var c = document.createElement("div");
-    c.className = "fcard";
-    var icon = document.createElement("div"); icon.className = "ficon"; icon.innerHTML = "&#128196;";
-    var meta = document.createElement("div"); meta.className = "fmeta";
-    var nm = document.createElement("div"); nm.className = "fname"; nm.textContent = m.name;
-    var sz = document.createElement("div"); sz.className = "fsize";
-    sz.textContent = fmt(m.size) + " · " + fmtTime(m.created_at);
-    meta.appendChild(nm); meta.appendChild(sz);
-    c.appendChild(icon); c.appendChild(meta);
-    if (m.outgoing && m.offer) {
-      var a = document.createElement("a");
-      a.className = "dlbtn"; a.textContent = "下载"; a.setAttribute("download", "");
-      a.href = "/api/web/download/" + m.offer;
-      c.appendChild(a);
-    } else if (m.outgoing) {
-      var x = document.createElement("div"); x.className = "exp"; x.textContent = "已失效";
-      c.appendChild(x);
-    }
-    row.appendChild(c);
-  }
+  row.appendChild(fileCardEl(m));
   return row;
+}
+
+/// 文件卡元素（批卡的单文件形态也用它）
+function fileCardEl(m) {
+  var c = document.createElement("div");
+  c.className = "fcard";
+  var icon = document.createElement("div"); icon.className = "ficon"; icon.innerHTML = "&#128196;";
+  var meta = document.createElement("div"); meta.className = "fmeta";
+  var nm = document.createElement("div"); nm.className = "fname"; nm.textContent = m.name;
+  var sz = document.createElement("div"); sz.className = "fsize";
+  sz.textContent = fmt(m.size) + " · " + fmtTime(m.created_at);
+  meta.appendChild(nm); meta.appendChild(sz);
+  c.appendChild(icon); c.appendChild(meta);
+  if (m.outgoing && m.offer) {
+    var a = document.createElement("a");
+    a.className = "dlbtn"; a.textContent = "下载"; a.setAttribute("download", "");
+    a.href = "/api/web/download/" + m.offer;
+    c.appendChild(a);
+  } else if (m.outgoing) {
+    var x = document.createElement("div"); x.className = "exp"; x.textContent = "已失效";
+    c.appendChild(x);
+  }
+  return c;
 }
 
 function sendText() {
@@ -715,8 +788,17 @@ function uploadFiles(files) {
   var bar = cur.querySelector(".prog > div");
   var nameEl = cur.querySelector(".fname");
   var total = arr.reduce(function(s, f){ return s + f.size; }, 0), done = 0;
+  var failed = 0;
   function next(i) {
-    if (i >= arr.length) { refresh(); return; }
+    if (i >= arr.length) {
+      // 全部完成：拉回服务器消息渲染成正式卡片；成功则移除进度卡
+      // （旧版不移除 → "正在发送"和文件名同时占两行）
+      refresh().then(function() {
+        if (failed) nameEl.textContent = "发送完成（" + failed + " 个失败）";
+        else if (cur.parentNode) cur.remove();
+      });
+      return;
+    }
     var f = arr[i];
     nameEl.textContent = "正在发送 (" + (i+1) + "/" + arr.length + ") " + f.name;
     var rel = f.webkitRelativePath || f.name;
@@ -731,6 +813,7 @@ function uploadFiles(files) {
     xhr.onloadend = function() {
       done += f.size;
       if (xhr.status !== 200) {
+        failed++;
         nameEl.textContent = "发送失败: " + f.name + " (" + xhr.status + ")";
       }
       next(i + 1);
