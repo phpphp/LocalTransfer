@@ -969,7 +969,7 @@ fun ChatScreen(peerId: String) {
     }
 }
 
-/** 长按消息：文本=直接复制（不弹菜单），文件卡=弹删除菜单 */
+/** 消息手势：双击=直接复制（文本），长按=弹菜单（文本=复制/删除，文件卡=删除） */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
@@ -977,6 +977,7 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
     val clip = androidx.compose.ui.platform.LocalClipboardManager.current
     val end = e.outgoing
     var menu by remember { mutableStateOf(false) }
+    var lastTap by remember { mutableStateOf(0L) }
     Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
         contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(
@@ -993,17 +994,17 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                         interactionSource = remember {
                             androidx.compose.foundation.interaction.MutableInteractionSource() },
                         indication = null,
-                        onClick = {},
-                        onLongClick = {
-                            if (e is ChatEntry.Text) {
-                                // 文本：长按直接复制
+                        onClick = {
+                            // 双击（350ms 内两次点击）= 直接复制文本
+                            val now = System.currentTimeMillis()
+                            if (e is ChatEntry.Text && now - lastTap < 350) {
                                 clip.setText(
                                     androidx.compose.ui.text.AnnotatedString(e.text))
                                 MainActivity.toast(ctx, "已复制")
-                            } else {
-                                menu = true
                             }
+                            lastTap = now
                         },
+                        onLongClick = { menu = true },
                     )) {
                 when (e) {
                     is ChatEntry.Text -> Text(e.text,
@@ -1034,13 +1035,20 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                 }
             }
         }
-        // 只有文件卡有菜单（文本长按直接复制了）
-        if (e is ChatEntry.FileCard) {
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (e is ChatEntry.Text) {
                 DropdownMenuItem(
-                    text = { Text("删除") },
-                    onClick = { menu = false; onDelete(e) })
+                    text = { Text("复制") },
+                    onClick = {
+                        clip.setText(
+                            androidx.compose.ui.text.AnnotatedString(e.text))
+                        MainActivity.toast(ctx, "已复制")
+                        menu = false
+                    })
             }
+            DropdownMenuItem(
+                text = { Text("删除") },
+                onClick = { menu = false; onDelete(e) })
         }
     }
 }
