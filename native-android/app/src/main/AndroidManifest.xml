@@ -39,7 +39,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- 竖屏卡片式扫码页 -->
+        <activity
+            android:name=".PortraitCaptureActivity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
         <!-- 后台接收前台服务 -->
+
         <service
             android:name=".TransferService"
             android:exported="false"

@@ -126,12 +126,12 @@ class MainActivity : ComponentActivity() {
     }
 
     fun startScan() {
-        // 库默认竖屏扫码（SCAN_ORIENTATION_LOCKED 默认 true 锁竖屏），
-        // 不做任何方向定制
+        // 自定义竖屏卡片式扫码页（库自带 CaptureActivity 是横屏满屏布局）
         scanLauncher.launch(ScanOptions().apply {
             setPrompt("对准电脑端二维码（http://IP:端口）")
             setBeepEnabled(false)
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setCaptureActivity(PortraitCaptureActivity::class.java)
         })
     }
 
