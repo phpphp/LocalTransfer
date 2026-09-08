@@ -26,6 +26,9 @@ impl RootView {
         if self.show_web_qr {
             out.push(self.render_web_qr_modal(cx).into_any_element());
         }
+        if self.overwrite_req.is_some() {
+            out.push(self.render_overwrite_modal(cx).into_any_element());
+        }
         if let Some((text, _, is_error)) = &self.toast {
             let (bg, fg, icon) = if *is_error {
                 (self.danger(cx), self.danger_fg(cx), IconName::TriangleAlert)
@@ -142,6 +145,114 @@ impl RootView {
                                         this.show_connect = false;
                                         cx.notify();
                                     })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// 覆盖确认弹窗：接收的文件与下载目录同名
+    fn render_overwrite_modal(&self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::component::ActiveTheme as _;
+        let Some(req) = &self.overwrite_req else {
+            return div().into_any_element();
+        };
+        let conflicts: Vec<String> = req
+            .files
+            .iter()
+            .filter(|f| self.me.download_dir.join(&f.rel_path).exists())
+            .map(|f| f.name.clone())
+            .collect();
+        let req = req.clone();
+
+        v_flex()
+            .id("overwrite-overlay")
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .bg(self.overlay(cx))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                v_flex()
+                    .id("overwrite-card")
+                    .w(px(400.))
+                    .p_4()
+                    .gap_3()
+                    .rounded_2xl()
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(self.border_color(cx))
+                    .bg(self.card_bg(cx))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .text_size(px(18.))
+                                    .text_color(cx.theme().warning),
+                            )
+                            .child(
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("{} 个同名文件已存在", conflicts.len())),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(self.fg_muted(cx))
+                                    .child("下载目录里已有同名文件："),
+                            )
+                            .child(
+                                v_flex().gap_0p5().children(
+                                    conflicts.iter().take(5).map(|n| {
+                                        div()
+                                            .text_xs()
+                                            .truncate()
+                                            .child(format!("· {n}"))
+                                    }),
+                                ),
+                            )
+                            .when(conflicts.len() > 5, |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(self.fg_muted(cx))
+                                        .child(format!("… 等共 {} 个", conflicts.len())),
+                                )
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("ow-cancel")
+                                    .label("取消")
+                                    .outline()
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        // 只关弹窗回请求卡片（用户还能拒绝或再接收）
+                                        this.overwrite_req = None;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("ow-overwrite")
+                                    .label("覆盖接收")
+                                    .primary()
+                                    .on_click(cx.listener(
+                                        move |this, _ev, _window, cx| {
+                                            let req = req.clone();
+                                            this.accept_request(req, true, cx);
+                                        },
+                                    )),
                             ),
                     ),
             )
