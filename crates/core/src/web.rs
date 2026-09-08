@@ -724,10 +724,10 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
   .sheet .body { overflow-y: auto; padding: 0 12px 12px; }
   .sheet .fitem2 { padding: 8px 4px; border-top: 1px solid rgba(127,127,127,.12); }
   .sheet .fitem2:first-child { border-top: 0; }
-  .zipbtn { border: 1px solid rgba(99,102,241,.5); border-radius: 8px; padding: 6px 10px;
-            font-size: 12px; cursor: pointer; color: #6366f1; text-decoration: none;
-            display: inline-block; flex: none; }
-  .zipbtn:hover { background: rgba(99,102,241,.12); }
+  .fbtn { border: 1px solid rgba(99,102,241,.5); border-radius: 8px; padding: 6px 10px;
+          font-size: 12px; cursor: pointer; color: #6366f1; text-decoration: none;
+          display: inline-block; flex: none; white-space: nowrap; }
+  a.fbtn:hover, div.fbtn:hover { background: rgba(99,102,241,.12); }
   .spd { min-height: 15px; }
   .cmenu { position: fixed; z-index: 30; background: #fff; color: #1f2328; border-radius: 10px;
            box-shadow: 0 6px 24px rgba(0,0,0,.22); padding: 4px; min-width: 120px; }
@@ -735,6 +735,12 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
   .citem { padding: 8px 14px; font-size: 13px; border-radius: 7px; cursor: pointer; }
   .citem:hover { background: rgba(127,127,127,.14); }
   .citem.danger { color: #dc2626; }
+  .citem.disabled { opacity: .4; cursor: default; }
+  .citem.disabled:hover { background: transparent; }
+  #toast { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%) translateY(8px);
+           background: rgba(30,32,38,.92); color: #fff; padding: 8px 16px; border-radius: 9px;
+           font-size: 13px; opacity: 0; pointer-events: none; transition: all .2s; z-index: 40; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
@@ -749,6 +755,7 @@ const WEB_PAGE: &str = r#"<!DOCTYPE html>
     <div class="body" id="mlist"></div>
   </div>
 </div>
+<div id="toast"></div>
 <div id="inputbar">
   <button class="ibtn" title="发送文件" onclick="document.getElementById('fpick').click()">&#128206;</button>
   <button class="ibtn" title="发送文件夹" onclick="document.getElementById('dpick').click()">&#128193;</button>
@@ -824,19 +831,24 @@ function drawBatch(b) {
     var nm = document.createElement("div"); nm.className = "fname"; nm.textContent = name;
     var sz = document.createElement("div"); sz.className = "fsize";
     sz.textContent = files.length + " 个文件 · " + fmt(total) + " · " +
-                     fmtTime(files[0].created_at) + " · 点击查看";
+                     fmtTime(files[0].created_at);
     meta.appendChild(nm); meta.appendChild(sz);
     c.appendChild(icon); c.appendChild(meta);
-    c.onclick = function() { openFolder(name, files); };
+    // 查看按钮（整卡点击也开弹窗）
+    var vb = document.createElement("div");
+    vb.className = "fbtn"; vb.textContent = "🔍 查看";
+    vb.onclick = function(e) { e.stopPropagation(); openFolder(name, files); };
+    c.appendChild(vb);
     // 有可下载文件 → 打包下载整批
     if (files.some(function(f){ return f.offer; })) {
       var z = document.createElement("a");
-      z.className = "zipbtn"; z.textContent = "📦 打包下载";
+      z.className = "fbtn"; z.textContent = "📦 打包下载";
       z.setAttribute("download", "");
       z.href = "/api/web/download-zip/" + encodeURIComponent(files[0].tid);
       z.onclick = function(e) { e.stopPropagation(); };
       c.appendChild(z);
     }
+    c.onclick = function() { openFolder(name, files); };
   } else {
     c = fileCardEl(files[0]);
   }
@@ -989,7 +1001,7 @@ function sendText() {
   var el = document.getElementById("txt");
   var t = el.value.trim();
   if (!t) return;
-  el.value = "";
+  el.value = ""; fitTxt();
   fetch("/api/web/message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -998,7 +1010,78 @@ function sendText() {
 }
 document.getElementById("txt").addEventListener("keydown", function(e) {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); }
+  // Shift+Enter = 换行（textarea 默认行为，配 auto-grow 才看得见）
 });
+
+// 输入框 auto-grow：单行起步，随内容长高（上限后内滚）
+var txtEl = document.getElementById("txt");
+function fitTxt() {
+  txtEl.style.height = "auto";
+  txtEl.style.height = Math.min(txtEl.scrollHeight, 110) + "px";
+}
+txtEl.addEventListener("input", fitTxt);
+
+// toast 提示
+var toastTimer = null;
+function toast(s) {
+  var t = document.getElementById("toast");
+  t.textContent = s; t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function() { t.classList.remove("show"); }, 2200);
+}
+
+// 输入框右键：剪切/复制/粘贴/全选（与电脑端一致）
+// 粘贴受浏览器限制：http 非 secure context 读不了剪贴板（localhost 可以），
+// 失败时提示改用 Ctrl+V
+txtEl.addEventListener("contextmenu", function(e) {
+  e.preventDefault(); e.stopPropagation();
+  closeMenu();
+  var hasSel = txtEl.selectionStart !== txtEl.selectionEnd;
+  menuEl = document.createElement("div");
+  menuEl.className = "cmenu";
+  function add(label, enabled, fn) {
+    var it = document.createElement("div");
+    it.className = "citem" + (enabled ? "" : " disabled");
+    it.textContent = label;
+    if (enabled) it.onclick = fn;
+    menuEl.appendChild(it);
+  }
+  add("剪切", hasSel, function() {
+    txtEl.focus(); document.execCommand("cut"); fitTxt();
+  });
+  add("复制", hasSel, function() {
+    txtEl.focus(); document.execCommand("copy");
+  });
+  add("粘贴", true, function() { pasteInto(); });
+  add("全选", txtEl.value.length > 0, function() {
+    txtEl.focus(); txtEl.select();
+  });
+  document.body.appendChild(menuEl);
+  var x = Math.min(e.clientX, window.innerWidth - menuEl.offsetWidth - 8);
+  var y = Math.min(e.clientY, window.innerHeight - menuEl.offsetHeight - 8);
+  menuEl.style.left = Math.max(8, x) + "px";
+  menuEl.style.top = Math.max(8, y) + "px";
+});
+
+/// 在光标处插入文本（粘贴用）
+function insertAtCursor(el, text) {
+  var s = el.selectionStart, e2 = el.selectionEnd;
+  el.value = el.value.slice(0, s) + text + el.value.slice(e2);
+  var pos = s + text.length;
+  el.setSelectionRange(pos, pos);
+  el.focus(); fitTxt();
+}
+function pasteInto() {
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    navigator.clipboard.readText().then(function(t) {
+      insertAtCursor(txtEl, t);
+    }).catch(function() {
+      txtEl.focus(); toast("此环境无法读取剪贴板，请按 Ctrl+V 粘贴");
+    });
+  } else {
+    txtEl.focus(); toast("此环境无法读取剪贴板，请按 Ctrl+V 粘贴");
+  }
+}
 
 // 上传：逐个文件 XHR（有进度），rel 用 webkitRelativePath 保留目录结构；
 // 每次选择生成一个 batch id，同批文件在电脑端合并为一张文件夹卡片
