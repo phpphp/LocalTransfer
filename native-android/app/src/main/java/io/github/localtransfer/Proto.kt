@@ -71,6 +71,8 @@ data class RecvProgress(
     val speedBps: Double = 0.0,
     /** 方向标记：true=发送中（进度卡文案用） */
     val sending: Boolean = false,
+    /** 等待对方确认接收（发送方 prepare 未通过期间） */
+    val waiting: Boolean = false,
 )
 
 /** 消息是否自己发出的（气泡朝向） */

@@ -331,9 +331,11 @@ object App {
             val title = if (metas.size == 1) metas[0].first.name
                         else "${metas.size} 个文件"
             val sum = metas.sumOf { it.first.size }
-            // 发送进度卡（消息流里，替代顶部状态条）
+            // 发送进度卡（消息流里，替代顶部状态条）——
+            // 从"等待对方接收"起就带 sending=true（右侧），不再先左后右跳
             main.post {
-                progress[sendKey] = RecvProgress(peerId, title, 0, metas.size, 0, sum)
+                progress[sendKey] = RecvProgress(peerId, title, 0, metas.size, 0, sum,
+                    sending = true, waiting = true)
             }
             runCatching {
                 api.sendFiles(p, metas) { i, t, tot ->
@@ -967,7 +969,7 @@ fun ChatScreen(peerId: String) {
     }
 }
 
-/** 长按消息：文本=复制/删除，文件卡=删除 */
+/** 长按消息：文本=直接复制（不弹菜单），文件卡=弹删除菜单 */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
@@ -992,7 +994,16 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                             androidx.compose.foundation.interaction.MutableInteractionSource() },
                         indication = null,
                         onClick = {},
-                        onLongClick = { menu = true },
+                        onLongClick = {
+                            if (e is ChatEntry.Text) {
+                                // 文本：长按直接复制
+                                clip.setText(
+                                    androidx.compose.ui.text.AnnotatedString(e.text))
+                                MainActivity.toast(ctx, "已复制")
+                            } else {
+                                menu = true
+                            }
+                        },
                     )) {
                 when (e) {
                     is ChatEntry.Text -> Text(e.text,
@@ -1023,19 +1034,13 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                 }
             }
         }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-            if (e is ChatEntry.Text) {
+        // 只有文件卡有菜单（文本长按直接复制了）
+        if (e is ChatEntry.FileCard) {
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(
-                    text = { Text("复制") },
-                    onClick = {
-                        clip.setText(androidx.compose.ui.text.AnnotatedString(e.text))
-                        MainActivity.toast(ctx, "已复制")
-                        menu = false
-                    })
+                    text = { Text("删除") },
+                    onClick = { menu = false; onDelete(e) })
             }
-            DropdownMenuItem(
-                text = { Text("删除") },
-                onClick = { menu = false; onDelete(e) })
         }
     }
 }
@@ -1062,9 +1067,11 @@ fun ProgressCard(p: RecvProgress) {
             }
             Spacer(Modifier.height(6.dp))
             val frac = if (p.total > 0) p.transferred.toFloat() / p.total else 0f
-            // 速度：>0 才显示
-            val speed = if (p.speedBps > 0) " · ${fmtSize(p.speedBps.toLong())}/s" else ""
-            Text("${if (p.sending) "发送中" else "接收中"} ${(frac * 100).toInt()}%$speed",
+            // 等待确认 → 只显示等待文案；速度 >0 才显示
+            val status = if (p.waiting) "等待对方接收…"
+                else "${if (p.sending) "发送中" else "接收中"} ${(frac * 100).toInt()}%" +
+                    (if (p.speedBps > 0) " · ${fmtSize(p.speedBps.toLong())}/s" else "")
+            Text(status,
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(6.dp))
