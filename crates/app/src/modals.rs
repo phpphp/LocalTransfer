@@ -332,6 +332,14 @@ impl RootView {
                 }))
         });
 
+        // 样式闭包要 'static，先取色值
+        use gpui_kit::component::ActiveTheme as _;
+        let primary = self.primary(cx);
+        let pill_bg = cx.theme().list_hover;
+        let hover_bg2 = cx.theme().list_hover;
+        let fg_muted = self.fg_muted(cx);
+        let url_for_click = url.clone();
+
         v_flex()
             .id("web-qr-overlay")
             .absolute()
@@ -356,6 +364,7 @@ impl RootView {
                     .p_5()
                     .gap_3()
                     .items_center()
+                    .relative()
                     .rounded_2xl()
                     .shadow_lg()
                     .border_1()
@@ -367,39 +376,100 @@ impl RootView {
                             cx.stop_propagation();
                         }),
                     )
+                    // 右上角关闭
                     .child(
                         div()
-                            .text_base()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("本机二维码"),
+                            .id("qr-close-btn")
+                            .absolute()
+                            .top_2()
+                            .right_2()
+                            .flex_none()
+                            .size(px(26.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover_bg2))
+                            .child(
+                                Icon::new(IconName::Close)
+                                    .with_size(px(13.))
+                                    .text_color(fg_muted),
+                            )
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.show_web_qr = false;
+                                cx.notify();
+                            })),
+                    )
+                    // 标题 + 副标题
+                    .child(
+                        v_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("本机二维码"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(self.fg_muted(cx))
+                                    .child("手机扫码添加本机或打开网页客户端"),
+                            ),
                     )
                     .children(qr)
+                    // 地址胶囊：点击复制（明确提示）
                     .child(
-                        div()
+                        h_flex()
                             .id("qr-url")
-                            .text_sm()
+                            .mt_1()
+                            .w_full()
+                            .px_3()
+                            .py_2()
+                            .gap_2()
+                            .items_center()
+                            .rounded_lg()
+                            .bg(pill_bg)
+                            .border_1()
+                            .border_color(self.border_color(cx))
                             .cursor_pointer()
-                            .text_color(self.primary(cx))
-                            .child(url.clone())
+                            .hover(move |s| s.border_color(primary))
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    url_for_click.clone(),
+                                ));
                                 this.toast("已复制地址", false);
-                            })),
+                            }))
+                            .child(
+                                Icon::new(IconName::Copy)
+                                    .with_size(px(13.))
+                                    .flex_none()
+                                    .text_color(self.primary(cx)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(url.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(self.primary(cx))
+                                    .child("点击复制"),
+                            ),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(self.fg_muted(cx))
-                            .child("手机扫码添加本机或打开网页客户端 · 同一局域网内使用"),
-                    )
-                    .child(
-                        Button::new("qr-close")
-                            .outline()
-                            .label("关闭")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.show_web_qr = false;
-                                cx.notify();
-                            })),
+                            .opacity(0.85)
+                            .child("同一局域网内使用 · 点击上方地址可复制"),
                     ),
             )
             .into_any_element()
