@@ -105,6 +105,9 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // 组件库内置文案（输入框右键菜单的 剪切/复制/粘贴/全选 等）切中文，
+            // rust-i18n 全局 locale，默认 en
+            gpui_kit::component::set_locale("zh-CN");
 
             // 显式绝对坐标窗口（WindowBounds::centered 在部分 Windows 显示器配置下
             // 会被 check_given_bounds 判无效而退回系统默认小窗）；
