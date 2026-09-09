@@ -22,3 +22,4 @@ qrcode = "0.14"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"
+tauri-winrt-notification = "0.8"
