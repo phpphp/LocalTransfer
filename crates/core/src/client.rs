@@ -24,7 +24,10 @@ pub type Sendings = Arc<Mutex<HashMap<String, SendReg>>>;
 
 /// 发送一条文本消息（不含入库，入库由调用方在发送前后自行决定）
 pub async fn send_text(base: &str, me: &DeviceInfo, text: &str, sent_at: i64) -> Result<()> {
-    let client = reqwest::Client::new();
+    // 局域网直连：绝不吃系统代理（用户开 Clash 等会把 LAN 请求劫持）
+    let client = reqwest::Client::builder()
+        // 局域网直连：绝不吃系统代理
+        .no_proxy().build().unwrap();
     let resp = client
         .post(format!("{base}/api/message"))
         .json(&MessageBody {
@@ -100,6 +103,8 @@ async fn send_files_inner(
     sendings: &Sendings,
 ) -> Result<()> {
     let client = reqwest::Client::builder()
+        // 局域网直连：绝不吃系统代理
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(600)) // 单文件上传上限；空闲时由 body 驱动
         .build()?;
 
@@ -203,7 +208,10 @@ pub async fn notify_cancel(client: &reqwest::Client, base: &str, token: &str) {
 
 /// 探测远端设备信息（手动添加设备用）
 pub async fn probe_info(base: &str) -> Result<DeviceInfo> {
-    let client = reqwest::Client::new();
+    // 局域网直连：绝不吃系统代理（用户开 Clash 等会把 LAN 请求劫持）
+    let client = reqwest::Client::builder()
+        // 局域网直连：绝不吃系统代理
+        .no_proxy().build().unwrap();
     let resp = client
         .get(format!("{base}/api/info"))
         .timeout(std::time::Duration::from_secs(3))
