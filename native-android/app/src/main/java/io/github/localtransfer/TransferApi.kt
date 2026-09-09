@@ -52,7 +52,7 @@ class TransferApi(private val me: DeviceInfo) {
         if (prCode != 200) {
             val msg = String(prResp, Charsets.UTF_8)
             throw TransferException(
-                if (msg.contains("超时")) "等待确认超时：请在 60 秒内在电脑端点「接收」"
+                if (msg.contains("超时")) "等待确认超时：请在 5 分钟内在电脑端点「接收」"
                 else if (msg.contains("拒绝")) "对方拒绝了传输"
                 else "对方返回 $prCode：$msg")
         }

@@ -8,7 +8,7 @@ const val DISCOVERY_GROUP = "239.192.71.82"
 const val DISCOVERY_PORT = 17878
 const val DEFAULT_HTTP_PORT = 17878
 const val DEVICE_TIMEOUT_MS = 15_000L
-const val PREPARE_TIMEOUT_MS = 60_000L
+const val PREPARE_TIMEOUT_MS = 300_000L
 
 data class DeviceInfo(
     val id: String,

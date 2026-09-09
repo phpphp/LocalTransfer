@@ -317,7 +317,7 @@ fn web_offer_list_and_download() {
             .build()
             .unwrap()
             .block_on(async move {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap(); // 直连，绕开系统代理
         let base = "http://127.0.0.1:55741";
 
         // 页面（聊天式网页客户端）
@@ -389,7 +389,7 @@ fn web_chat_text_and_upload() {
             .build()
             .unwrap()
             .block_on(async {
-                let client = reqwest::Client::new();
+                let client = reqwest::Client::builder().no_proxy().build().unwrap(); // 直连，绕开系统代理
                 let base = "http://127.0.0.1:55751";
 
                 // 浏览器发文本

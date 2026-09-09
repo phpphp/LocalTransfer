@@ -25,8 +25,8 @@ use crate::proto::{
 };
 use crate::store::Store;
 
-/// 等待接收方确认的超时
-pub const PREPARE_TIMEOUT_SECS: u64 = 60;
+/// 等待接收方确认的超时（接收端可"存到…"选目录，给足 5 分钟）
+pub const PREPARE_TIMEOUT_SECS: u64 = 300;
 
 pub struct Decision {
     pub accept: bool,
