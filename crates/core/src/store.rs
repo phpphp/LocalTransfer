@@ -127,14 +127,35 @@ fn default_close_action() -> String {
     "ask".into()
 }
 
-/// 系统设备名（Windows=计算机名，登录时由系统写入环境变量，等价 GetComputerName；
-/// unix=主机名）。与手机端"默认用系统设备名"的逻辑对齐。
+/// 系统设备名（用户在系统设置里给设备起的名字——"默认使用设备名"应取这个，
+/// 不是 hostname：macOS 的 hostname 多为"xxx.local"甚至空，不是用户认知的设备名）。
+/// Windows=计算机名（COMPUTERNAME 环境变量，等价 GetComputerName）；
+/// macOS=scutil --get ComputerName（系统设置→通用→关于本机→名称）；
+/// Linux=hostname（/etc/hostname）。与手机端"默认用系统设备名"逻辑对齐。
 pub fn system_device_name() -> String {
     #[cfg(target_os = "windows")]
     {
         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "LocalTransfer".into())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        // scutil ComputerName = 用户可读名（可含中文/空格）；失败回落主机名
+        std::process::Command::new("scutil")
+            .arg("-get")
+            .arg("ComputerName")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                hostname::get()
+                    .ok()
+                    .and_then(|h| h.to_str().map(str::to_string))
+                    .unwrap_or_else(|| "LocalTransfer".into())
+            })
+    }
+    #[cfg(target_os = "linux")]
     {
         let from_file = |p: &str| {
             std::fs::read_to_string(p)
@@ -145,6 +166,10 @@ pub fn system_device_name() -> String {
         from_file("/etc/hostname")
             .or_else(|| from_file("/proc/sys/kernel/hostname"))
             .unwrap_or_else(|| "LocalTransfer".into())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        "LocalTransfer".into()
     }
 }
 

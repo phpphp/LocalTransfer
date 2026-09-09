@@ -12,6 +12,7 @@ futures = { workspace = true }
 tokio-util = { workspace = true }
 socket2 = { workspace = true }
 if-addrs = { workspace = true }
+hostname = "0.4"
 smol = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
