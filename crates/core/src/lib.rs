@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod discovery;
+pub mod net;
 pub mod proto;
 pub mod server;
 pub mod store;
@@ -285,7 +286,7 @@ async fn run(
                     if let Some(token) = reg.token {
                         let base = reg.base.clone();
                         tokio::spawn(async move {
-                            let client = reqwest::Client::new();
+                            let client = client::lan_client(&base);
                             client::notify_cancel(&client, &base, &token).await;
                         });
                     }

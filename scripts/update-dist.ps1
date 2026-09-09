@@ -32,8 +32,15 @@ if ($LASTEXITCODE -ne 0) { Write-Output "INSTALLER PACK FAILED"; exit 1 }
 Write-Output "== android build =="
 $env:JAVA_HOME = 'C:\Program Files\Android\openjdk\jdk-21.0.8'
 $env:ANDROID_HOME = 'C:\android-sdk'
-$Gradle = Get-ChildItem "$env:USERPROFILE\.gradle\wrapper\dists\gradle-*\*\gradle-*\bin\gradle.bat" |
-    Select-Object -First 1 -ExpandProperty FullName
+# Gradle：优先 scoop 全局安装；回退 wrapper dists 里版本最高的。
+# （-First 1 曾在 dists 混入多个版本时挑中最旧的 8.13，AGP 9 直接拒构建）
+$Gradle = @("$env:USERPROFILE\scoop\apps\gradle\current\bin\gradle.bat") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $Gradle) {
+    $Gradle = Get-ChildItem "$env:USERPROFILE\.gradle\wrapper\dists\gradle-*\*\gradle-*\bin\gradle.bat" |
+        Sort-Object { [version](($_.FullName -replace '.*dists[\\/]gradle-', '') -replace '[\\\/].*$', '') } -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
 if (-not $Gradle) { Write-Output "GRADLE NOT FOUND in wrapper dists"; exit 1 }
 Push-Location native-android
 & $Gradle assembleDebug assembleRelease --console=plain | Select-Object -Last 3

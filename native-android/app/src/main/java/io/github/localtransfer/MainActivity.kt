@@ -32,6 +32,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.automirrored.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -194,16 +199,33 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /** 扩展名 → MIME：决定系统用哪个应用打开——
+         *  apk → 包安装器；图片/视频 → 图库（默认应用）；其余给准确 MIME 走默认应用 */
         private fun mimeOf(name: String): String = when (
             name.substringAfterLast('.', "").lowercase()) {
+            "apk" -> "application/vnd.android.package-archive"
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "gif" -> "image/gif"
             "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "heic", "heif" -> "image/heic"
             "mp4" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "mov" -> "video/quicktime"
+            "3gp" -> "video/3gpp"
             "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "flac" -> "audio/flac"
             "pdf" -> "application/pdf"
             "txt", "md", "log" -> "text/plain"
+            "doc" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "xls" -> "application/vnd.ms-excel"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "ppt" -> "application/vnd.ms-powerpoint"
+            "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             else -> "application/octet-stream"
         }
 
@@ -517,7 +539,7 @@ object App {
                     sending = true, waiting = true)
             }
             runCatching {
-                api.sendFiles(p, metas) { i, t, tot ->
+                val ok = api.sendFiles(p, metas) { i, t, tot ->
                     main.post {
                         progress[sendKey] = RecvProgress(peerId, title, i, metas.size,
                             t, tot, sampleSpeed(sendKey, t), sending = true)
@@ -526,12 +548,15 @@ object App {
                 main.post {
                     progress.remove(sendKey)
                     speedSamples.remove(sendKey)
-                    // 发送完成的卡片带源文件路径
-                    val sent = metas.map { m ->
-                        ReceivedFile(m.first.name, m.first.size, null, m.second)
+                    // 等待确认超时（ok=false）静默收场：清进度卡，不出成功卡也不提示
+                    if (ok) {
+                        // 发送完成的卡片带源文件路径
+                        val sent = metas.map { m ->
+                            ReceivedFile(m.first.name, m.first.size, null, m.second)
+                        }
+                        chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
+                            true, title, sum, System.currentTimeMillis(), null, sent))
                     }
-                    chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
-                        true, title, sum, System.currentTimeMillis(), null, sent))
                 }
             }.onFailure {
                 main.post {
@@ -605,29 +630,132 @@ fun App() {
         val peerId = App.currentPeer
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
         App.pendingReq?.let { req ->
-            AlertDialog(
+            // 卡片式接收弹窗：渐变图标 + 摘要胶囊 + 拒绝/接收/存到…
+            androidx.compose.ui.window.Dialog(
                 onDismissRequest = { },
-                title = { Text("${req.peer.name} 想发送文件",
-                    fontWeight = FontWeight.SemiBold) },
-                text = { Text("${req.files.size} 个文件 · " +
-                        fmtSize(req.files.sumOf { it.size }),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                confirmButton = { Row {
-                    TextButton(onClick = {
-                        // 点接收 → 直接跳进对应会话（看进度），不用再手动找设备
-                        App.currentPeer = req.peer.id
-                        req.decision.complete(true); App.pendingReq = null
-                    }) { Text("接收") }
-                    TextButton(onClick = {
-                        // 选文件夹（授权）后自动接收，保存到所选目录
-                        App.pickingForReceive = true
-                        (ctx as? MainActivity)?.pickDir()
-                    }) { Text("存到…") }
-                } },
-                dismissButton = { TextButton(onClick = {
-                    req.decision.complete(false); App.pendingReq = null
-                }) { Text("拒绝") } },
-            )
+                properties = androidx.compose.ui.window.DialogProperties(
+                    dismissOnClickOutside = false)
+            ) {
+                androidx.compose.material3.Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 22.dp)
+                    ) {
+                        Spacer(Modifier.height(22.dp))
+                        // 顶部渐变图标
+                        Box(
+                            modifier = Modifier
+                                .size(58.dp)
+                                .clip(RoundedCornerShape(19.dp))
+                                .background(
+                                    androidx.compose.ui.graphics.Brush.linearGradient(
+                                        listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.primary.copy(alpha = .65f)
+                                        )
+                                    )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Rounded.FileDownload, null,
+                                tint = androidx.compose.ui.graphics.Color.White,
+                                modifier = Modifier.size(30.dp))
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(req.peer.name,
+                            fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text("想发送文件给你", fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(14.dp))
+                        // 文件数 + 大小摘要胶囊
+                        androidx.compose.material3.Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = .09f)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(
+                                    horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Rounded.Description, null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(5.dp))
+                                Text("${req.files.size} 个文件 · " +
+                                        fmtSize(req.files.sumOf { it.size }),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Spacer(Modifier.height(18.dp))
+                        // 拒绝 / 接收
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            androidx.compose.material3.OutlinedButton(
+                                onClick = {
+                                    req.decision.complete(false); App.pendingReq = null
+                                },
+                                colors = androidx.compose.material3.ButtonDefaults
+                                    .outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.error.copy(alpha = .35f)),
+                                shape = RoundedCornerShape(13.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Close, null,
+                                    modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("拒绝")
+                            }
+                            androidx.compose.material3.Button(
+                                onClick = {
+                                    // 点接收 → 直接跳进对应会话（看进度）
+                                    App.currentPeer = req.peer.id
+                                    req.decision.complete(true); App.pendingReq = null
+                                },
+                                shape = RoundedCornerShape(13.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Download, null,
+                                    modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("接收")
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        // 存到…：选文件夹（授权）后自动接收，保存到所选目录
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                App.pickingForReceive = true
+                                (ctx as? MainActivity)?.pickDir()
+                            },
+                            shape = RoundedCornerShape(13.dp),
+                            colors = androidx.compose.material3.ButtonDefaults
+                                .textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.DriveFileMove, null,
+                                modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("存到…（选择位置）")
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
+                }
+            }
         }
     }
 }

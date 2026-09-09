@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 电池优化白名单申请弹窗（设置里"禁用电池优化"用） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 打开接收的 .apk 时拉起系统包安装器（Android 8+ 需此权限，
+         未授权时系统会引导用户允许"安装未知应用"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="LocalTransfer"

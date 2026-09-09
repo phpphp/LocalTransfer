@@ -29,15 +29,17 @@ class TransferApi(private val me: DeviceInfo) {
     }
 
     /**
-     * 发一组文件：prepare（等确认 ≤60s）→ 逐文件流式上传。
+     * 发一组文件：prepare（等确认 ≤5 分钟）→ 逐文件流式上传。
      * 输出流先取再写（等价 Flutter 端"先 send 再填 sink"，
      * 顺序反了会反压死锁）。
+     * 返回 false = 对方 5 分钟没点确认（等待确认超时，静默取消不提示）；
+     * 其余失败照旧抛 [TransferException]。
      */
     fun sendFiles(
         peer: Peer,
         files: List<Pair<FileMeta, String>>, // (meta, 本地路径)
         onProgress: (idx: Int, transferred: Long, total: Long) -> Unit,
-    ) {
+    ): Boolean {
         val metas = JSONArray().apply { files.forEach { put(it.first.toJson()) } }
         val pr = post("${base(peer)}/api/transfer/prepare")
         val prBody = JSONObject()
@@ -51,9 +53,10 @@ class TransferApi(private val me: DeviceInfo) {
         pr.disconnect()
         if (prCode != 200) {
             val msg = String(prResp, Charsets.UTF_8)
+            // 等待确认超时 ≠ 拒绝：对方没点接收往往就是不想收，静默收场
+            if (msg.contains("超时")) return false
             throw TransferException(
-                if (msg.contains("超时")) "等待确认超时：请在 5 分钟内在电脑端点「接收」"
-                else if (msg.contains("拒绝")) "对方拒绝了传输"
+                if (msg.contains("拒绝")) "对方拒绝了传输"
                 else "对方返回 $prCode：$msg")
         }
         val token = JSONObject(String(prResp, Charsets.UTF_8)).getString("token")
@@ -88,6 +91,7 @@ class TransferApi(private val me: DeviceInfo) {
             }
             conn.disconnect()
         }
+        return true
     }
 
     fun cancel(peer: Peer, token: String) {

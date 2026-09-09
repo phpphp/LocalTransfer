@@ -598,11 +598,22 @@ impl RootView {
                                             .primary()
                                             .flex_1()
                                             .small()
-                                            .flex_1()
                                             .on_click(cx.listener(
                                                 move |this, _ev, _window, cx| {
                                                     // 同名文件预检：有冲突先弹覆盖确认
                                                     this.ask_overwrite(cx);
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        Button::new("req-save-to")
+                                            .label("存到…")
+                                            .outline()
+                                            .small()
+                                            .flex_1()
+                                            .on_click(cx.listener(
+                                                move |this, _ev, window, cx| {
+                                                    this.save_request_to(window, cx);
                                                 },
                                             )),
                                     ),
@@ -610,6 +621,40 @@ impl RootView {
                     ),
             ))
             .into_any_element()
+    }
+
+    /// 接收请求「存到…」：选目录后按该目录接收本批文件
+    /// （只改本批接收目录，不改默认下载目录设置）
+    fn save_request_to(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let picked = match cx.update(|_, cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: None,
+                })
+            }) {
+                Ok(rx) => rx.await.ok().and_then(|r| r.ok()).flatten(),
+                Err(_) => None,
+            };
+            if let Some(dir) = picked.and_then(|v| v.into_iter().next()) {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(req) = this.incoming.take() {
+                        // 自选目录：同名冲突由 core 自动改名避让（overwrite=false）
+                        let _ = this.core.send(UiCommand::RespondRequest {
+                            req_id: req.req_id,
+                            accept: true,
+                            save_dir: Some(dir),
+                            overwrite: false,
+                        });
+                    }
+                    this.sync_scroller(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn render_message(

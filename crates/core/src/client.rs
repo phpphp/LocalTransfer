@@ -22,12 +22,38 @@ pub struct SendReg {
 
 pub type Sendings = Arc<Mutex<HashMap<String, SendReg>>>;
 
+/// 从 base URL（如 http://192.168.8.3:17878）解析对端 IPv4
+fn base_host_ip(base: &str) -> Option<std::net::IpAddr> {
+    let rest = base.split_once("://")?.1;
+    let host = rest.split(':').next()?; // IPv4 直连，无方括号/路径
+    host.parse().ok()
+}
+
+/// 与对端同网段的本地绑定地址（base URL 版）
+fn lan_bind_addr(base: &str) -> Option<std::net::IpAddr> {
+    base_host_ip(base)
+        .and_then(crate::net::local_addr_for)
+        .map(std::net::IpAddr::V4)
+}
+
+/// 局域网直连客户端：不吃系统代理（Clash 等会把 LAN 请求劫持）+
+/// 绑定与对端同网段的本地源 IP（飞连/EasyConnect 等 VPN 推宽路由进隧道时，
+/// 绑源即绑出接口，流量必走物理网卡——"看得到设备却收发不了消息"的对策）
+pub fn lan_client(base: &str) -> reqwest::Client {
+    let local = lan_bind_addr(base);
+    if local.is_some() {
+        tracing::debug!("LAN 客户端绑定源 {local:?} → {base}");
+    }
+    reqwest::Client::builder()
+        .no_proxy()
+        .local_address(local)
+        .build()
+        .unwrap()
+}
+
 /// 发送一条文本消息（不含入库，入库由调用方在发送前后自行决定）
 pub async fn send_text(base: &str, me: &DeviceInfo, text: &str, sent_at: i64) -> Result<()> {
-    // 局域网直连：绝不吃系统代理（用户开 Clash 等会把 LAN 请求劫持）
-    let client = reqwest::Client::builder()
-        // 局域网直连：绝不吃系统代理
-        .no_proxy().build().unwrap();
+    let client = lan_client(base);
     let resp = client
         .post(format!("{base}/api/message"))
         .json(&MessageBody {
@@ -118,6 +144,7 @@ async fn send_files_inner(
         // 局域网直连：绝不吃系统代理
         .no_proxy()
         .timeout(std::time::Duration::from_secs(600)) // 单文件上传上限；空闲时由 body 驱动
+        .local_address(lan_bind_addr(base))
         .build()?;
 
     // 1) prepare
@@ -229,7 +256,10 @@ pub async fn probe_info(base: &str) -> Result<DeviceInfo> {
     // 局域网直连：绝不吃系统代理（用户开 Clash 等会把 LAN 请求劫持）
     let client = reqwest::Client::builder()
         // 局域网直连：绝不吃系统代理
-        .no_proxy().build().unwrap();
+        .no_proxy()
+        .local_address(lan_bind_addr(base))
+        .build()
+        .unwrap();
     let resp = client
         .get(format!("{base}/api/info"))
         .timeout(std::time::Duration::from_secs(3))

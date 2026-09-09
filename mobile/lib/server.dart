@@ -15,11 +15,19 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'proto.dart';
 
+/// 接收决策：accept=false 拒绝；accept=true 时 treeUri 非空表示
+/// 用户"存到…"选定的 SAF 目录（本批文件转存到该目录而非默认下载目录）
+class IncomingDecision {
+  final bool accept;
+  final String? treeUri;
+  IncomingDecision(this.accept, this.treeUri);
+}
+
 class IncomingReq {
   final String reqId;
   final DeviceInfo peer;
   final List<FileMeta> files;
-  final Completer<bool> decision;
+  final Completer<IncomingDecision> decision;
   IncomingReq(this.reqId, this.peer, this.files, this.decision);
 }
 
@@ -49,9 +57,11 @@ class RecvSession {
   final DeviceInfo peer;
   final List<FileMeta> files;
   final String saveDir;
+  /// 用户"存到…"选定的 SAF 目录（null=默认转存 Download/LocalTransfer）
+  final String? treeUri;
   int completed = 0;
   final List<DoneFile> doneFiles = [];
-  RecvSession(this.token, this.peer, this.files, this.saveDir);
+  RecvSession(this.token, this.peer, this.files, this.saveDir, this.treeUri);
 }
 
 class AppServer {
@@ -125,20 +135,20 @@ class AppServer {
     if (files.isEmpty) return Response(400, body: '文件列表为空');
 
     // 挂起等 UI 确认（5 分钟超时，与桌面端一致——对方可用"存到…"从容选目录）
-    final req = IncomingReq(
-        DateTime.now().microsecondsSinceEpoch.toString(), sender, files, Completer<bool>());
+    final req = IncomingReq(DateTime.now().microsecondsSinceEpoch.toString(), sender,
+        files, Completer<IncomingDecision>());
     onIncoming(req);
-    bool ok;
+    IncomingDecision d;
     try {
-      ok = await req.decision.future.timeout(const Duration(seconds: prepareTimeoutSecs));
+      d = await req.decision.future.timeout(const Duration(seconds: prepareTimeoutSecs));
     } on TimeoutException {
       return Response.forbidden('等待确认超时');
     }
-    if (!ok) return Response.forbidden('对方拒绝了传输');
+    if (!d.accept) return Response.forbidden('对方拒绝了传输');
 
     final dir = await _saveDir();
     final token = DateTime.now().microsecondsSinceEpoch.toString();
-    _sessions[token] = RecvSession(token, sender, files, dir);
+    _sessions[token] = RecvSession(token, sender, files, dir, d.treeUri);
     return Response.ok(jsonEncode({'token': token}),
         headers: {'Content-Type': 'application/json'});
   }
@@ -175,8 +185,9 @@ class AppServer {
     await sink.flush();
     await sink.close();
     sess.completed++;
-    // 转存公共下载目录（Download/LocalTransfer/...），文件管理器可见
-    final pub = await _publishToDownloads(path, relClean);
+    // 转存公共下载目录（Download/LocalTransfer/...），文件管理器可见；
+    // "存到…"选过目录则转存到该 SAF 目录
+    final pub = await _publishToDownloads(path, relClean, sess.treeUri);
     final (publicPath, uri) = pub;
     sess.doneFiles.add(DoneFile(
       relClean.isEmpty ? meta.name : relClean,
@@ -193,13 +204,18 @@ class AppServer {
     return Response.ok('');
   }
 
-  /// 复制进公共下载目录（Android 平台通道 MediaStore）。
+  /// 复制进公共下载目录（Android 平台通道 MediaStore）；
+  /// [treeUri] 非空时转存到用户选定的 SAF 目录。
   /// 返回 (真实路径?, contentURI?)。
   Future<(String?, String?)> _publishToDownloads(
-      String srcPath, String relPath) async {
+      String srcPath, String relPath, String? treeUri) async {
     try {
       final r = await const MethodChannel('localtransfer/downloads')
-          .invokeMethod<String?>('save', {'path': srcPath, 'rel': relPath});
+          .invokeMethod<String?>('save', {
+        'path': srcPath,
+        'rel': relPath,
+        if (treeUri != null) 'treeUri': treeUri,
+      });
       if (r == null || r.isEmpty) return (null, null);
       // Kotlin 返回 "path|uri"（path 可能为 "null"）
       final parts = r.split('|');
