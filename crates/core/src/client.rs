@@ -47,6 +47,8 @@ pub fn lan_client(base: &str) -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
         .local_address(local)
+        // 连接阶段就失败（对方离线/IP 变了），别等总超时
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap()
 }
@@ -64,7 +66,16 @@ pub async fn send_text(base: &str, me: &DeviceInfo, text: &str, sent_at: i64) ->
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .context("连接对方失败")?;
+        .map_err(|e| {
+            // 超时单独成案：设备离线/IP 变更后条目还指着旧地址，TCP SYN 无响应
+            if e.is_timeout() {
+                anyhow::anyhow!(
+                    "连接对方超时：对方可能已离线或换了 IP，等它重新上线后自动恢复"
+                )
+            } else {
+                anyhow::Error::new(e).context("连接对方失败")
+            }
+        })?;
     if !resp.status().is_success() {
         bail!("对方返回 {}", resp.status());
     }
@@ -145,6 +156,7 @@ async fn send_files_inner(
         .no_proxy()
         .timeout(std::time::Duration::from_secs(600)) // 单文件上传上限；空闲时由 body 驱动
         .local_address(lan_bind_addr(base))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     // 1) prepare

@@ -90,6 +90,11 @@ pub fn local_addr_for(peer: IpAddr) -> Option<Ipv4Addr> {
         return None;
     };
     let ifaces = lan_ipv4_interfaces();
+    // 对端就是本机（同机多实例互发）：不绑定，让连接走纯回环——
+    // 绑定物理源后自连接要绕行物理网卡路径，可能被 WFP/Hyper-V/VPN 过滤
+    if ifaces.contains(&p) {
+        return None;
+    }
     ifaces
         .iter()
         .map(|ip| (common_prefix_bits(u32::from(*ip), u32::from(p)), ip))
