@@ -77,9 +77,12 @@ fn saved_path_of(msg: &transfer_core::ChatMessage) -> Option<PathBuf> {
 impl RootView {
     pub fn render_chat(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // 渲染时缓存窗口激活状态（事件泵里没有 window 可查）
+        self.window_active = window.is_window_active();
+
         let Some(peer) = self.selected.clone() else {
             return self.no_peer_placeholder(cx);
         };

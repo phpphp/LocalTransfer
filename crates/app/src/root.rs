@@ -152,6 +152,24 @@ pub fn set_autostart(_on: bool) -> anyhow::Result<()> {
     anyhow::bail!("此平台不支持开机启动")
 }
 
+// ---------------------------------------------------------------- 系统通知
+// 仿 QQ/微信的提醒：窗口不在前台时弹 Windows 通知（toast）。
+// 未打包的 Win32 程序没有自己的 AUMID，借 PowerShell 的 AUMID 弹（来源显示 PowerShell）。
+
+#[cfg(target_os = "windows")]
+pub fn desktop_notify(title: &str, body: &str) {
+    use tauri_winrt_notification::Toast;
+    let _ = Toast::new(
+        "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe",
+    )
+    .title(title)
+    .text1(body)
+    .show();
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn desktop_notify(_title: &str, _body: &str) {}
+
 /// 待确认的接收请求（会话内的请求卡片数据）
 #[derive(Clone)]
 pub struct IncomingReq {
@@ -214,6 +232,9 @@ pub struct RootView {
 
     /// 覆盖确认弹窗中的请求（接收前发现同名文件）
     pub overwrite_req: Option<IncomingReq>,
+
+    /// 窗口是否激活（渲染时缓存；仅后台时弹系统通知）
+    pub window_active: bool,
 
     _keep: Vec<Subscription>,
 }
@@ -305,6 +326,7 @@ impl RootView {
             sidebar_w: crate::sidebar::SIDEBAR_W,
             sidebar_drag: None,
             overwrite_req: None,
+            window_active: true,
             _keep: vec![sub],
         };
         view
@@ -404,6 +426,14 @@ impl RootView {
                 if !is_selected {
                     *self.unread.entry(peer.clone()).or_insert(0) += 1;
                 }
+                // 后台时弹系统通知（QQ/微信式提醒）
+                if !self.window_active {
+                    let name = self.peer_name(&peer);
+                    if let MessageKind::Text(t) = &msg.kind {
+                        let preview: String = t.chars().take(40).collect();
+                        desktop_notify(&name, &preview);
+                    }
+                }
                 self.append_message(peer, msg);
             }
             CoreEvent::IncomingRequest {
@@ -411,6 +441,12 @@ impl RootView {
                 peer,
                 files,
             } => {
+                if !self.window_active {
+                    desktop_notify(
+                        &format!("{} 想发送文件", peer.info.name),
+                        &format!("{} 个文件 · 点击处理", files.len()),
+                    );
+                }
                 // 同一时间只展示最新请求；旧的按拒绝处理（对方收到 403）
                 if let Some(old) = self.incoming.take() {
                     let _ = self.core.send(UiCommand::RespondRequest {
@@ -571,6 +607,13 @@ impl RootView {
                             if f.transferred < f.meta.size {
                                 f.transferred = f.meta.size;
                             }
+                        }
+                        // 接收完成 → 后台时弹系统通知
+                        if !self.window_active {
+                            let what = crate::root::transfer_display_name(&t.files);
+                            let peer_id = t.peer_id.clone();
+                            let name = self.peer_name(&peer_id);
+                            desktop_notify(&format!("已接收 · {name}"), &what);
                         }
                     }
                 }

@@ -106,6 +106,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (path != null) {
+                // 接收弹窗的"存到…"：只临时改本次接收目录（不落库、不动设置显示），
+                // 批次完成自动恢复默认
+                if (App.pickingForReceive) {
+                    App.pickingForReceive = false
+                    App.server.customSaveDir = path
+                    App.pendingReq?.let { r ->
+                        r.decision.complete(true)
+                        App.currentPeer = r.peer.id
+                        App.pendingReq = null
+                        MainActivity.toast(ctx, "本批将保存到 $path")
+                    }
+                    return@registerForActivityResult
+                }
                 ctx.getSharedPreferences("lt", Context.MODE_PRIVATE)
                     .edit().putString("save_dir", path).apply()
                 App.server.customSaveDir = path
@@ -114,16 +127,6 @@ class MainActivity : ComponentActivity() {
                 MainActivity.toast(ctx,
                     if (writable) "已设为 $path"
                     else "已设为 $path（当前不可写，请检查权限）")
-                // 接收弹窗的"存到…"：选完目录并授权 → 直接接收该请求
-                if (App.pickingForReceive) {
-                    App.pickingForReceive = false
-                    App.pendingReq?.let { r ->
-                        r.decision.complete(true)
-                        App.currentPeer = r.peer.id
-                        App.pendingReq = null
-                        MainActivity.toast(ctx, "将保存到 $path")
-                    }
-                }
             } else {
                 MainActivity.toast(ctx, "无法识别该目录的真实路径，请换一个")
             }
@@ -135,13 +138,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         App.init(applicationContext)
         setContent { App() }
-        // 通知权限（API 33+，前台服务通知用）
+        // 通知权限（API 33+，前台服务通知与消息提醒用）
         if (Build.VERSION.SDK_INT >= 33) {
             notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
         // 前台服务：后台持续可接收
         startForegroundService(Intent(this, TransferService::class.java))
     }
+
+    override fun onResume() { super.onResume(); App.isForeground = true }
+    override fun onPause() { super.onPause(); App.isForeground = false }
 
     fun startScan() {
         // 自定义竖屏卡片式扫码页（库自带 CaptureActivity 是横屏满屏布局）
@@ -160,6 +166,59 @@ class MainActivity : ComponentActivity() {
         fun toast(context: Context, text: String) {
             android.widget.Toast.makeText(context, text,
                 android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+        /** 打开文件。URI 用 content://（MediaStore，可跨应用授权）；
+         *  真实路径用 FileProvider（file:// 直传 API 24+ 抛 FileUriExposedException） */
+        fun openFile(context: Context, f: ReceivedFile) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    val uri = f.uri?.let { Uri.parse(it) }
+                        ?: f.path?.let {
+                            androidx.core.content.FileProvider.getUriForFile(
+                                context, "${context.packageName}.fileprovider", File(it))
+                        } ?: run {
+                            toast(context, "文件路径不可用"); return
+                        }
+                    setDataAndType(uri, mimeOf(f.name))
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                toast(context, "打开失败：${e.message}")
+            }
+        }
+
+        private fun mimeOf(name: String): String = when (
+            name.substringAfterLast('.', "").lowercase()) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "mp4" -> "video/mp4"
+            "mp3" -> "audio/mpeg"
+            "pdf" -> "application/pdf"
+            "txt", "md", "log" -> "text/plain"
+            else -> "application/octet-stream"
+        }
+
+        /** 打开目录（文件管理器定位到它）。externalstorage.documents 的
+         *  文档 id 支持 primary: 前缀子路径，多数 ROM 的文件管理器认；
+         *  打不开返回 false（调用方 toast 出路径兜底）。 */
+        fun openDirectory(context: Context, dirPath: String): Boolean {
+            val rel = dirPath.removePrefix("/storage/emulated/0/")
+                .trimEnd('/')
+            if (rel.isEmpty()) return false
+            val docUri = runCatching {
+                android.provider.DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents", "primary:$rel")
+            }.getOrNull() ?: return false
+            val i = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(docUri,
+                    android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            return runCatching { context.startActivity(i) }.isSuccess
         }
 
         /** 跳厂商"自启动 / 允许后台活动"管理页。
@@ -238,10 +297,45 @@ object App {
     var currentPeer by mutableStateOf<String?>(null)
     /** 接收弹窗点了"存到…"正在选目录（选完自动接收该请求） */
     var pickingForReceive = false
+    /** 应用是否在前台（MainActivity onResume/onPause 维护；
+     *  仅后台时发系统通知，前台看着聊天界面就不打扰） */
+    var isForeground = false
+
+    /** 仿 QQ/微信的系统通知（横幅+声音；仅后台时发） */
+    fun notify(title: String, text: String) {
+        if (isForeground) return
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(android.app.NotificationChannel(
+                "lt_notify", "消息提醒",
+                android.app.NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "收到消息或文件时提醒"
+            })
+        }
+        val pi = android.app.PendingIntent.getActivity(ctx, 0,
+            Intent(ctx, MainActivity::class.java),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                    or android.app.PendingIntent.FLAG_IMMUTABLE)
+        val builder = if (Build.VERSION.SDK_INT >= 26)
+            android.app.Notification.Builder(ctx, "lt_notify")
+        else @Suppress("DEPRECATION") android.app.Notification.Builder(ctx)
+        val n = builder
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(System.currentTimeMillis().toInt(), n)
+    }
     /** 需要"所有文件访问"权限（首次启动 / 权限被收回）→ UI 弹窗引导 */
     var needsAllFilesPermission by mutableStateOf(false)
     /** 当前接收目录（弹窗显示用，选择后立即更新） */
     var saveDirDisplay by mutableStateOf("")
+    /** 持久化的默认接收目录（"存到…"的临时目录在批次完成后恢复回它） */
+    var defaultSaveDir: String =
+        "/storage/emulated/0/Download/LocalTransfer"
     /** 自动接收文件 */
     var autoReceive by mutableStateOf(false)
     /** 主题模式：null=跟随系统 */
@@ -298,8 +392,11 @@ object App {
             override fun onMessage(peerId: String, peerName: String, text: String) {
                 chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }
                     .add(ChatEntry.Text(false, text, System.currentTimeMillis()))
+                notify(peerName, text.take(40))
             }
             override fun onIncoming(req: IncomingReq) {
+                notify("${req.peer.name} 想发送文件",
+                    "${req.files.size} 个文件 · 点击处理")
                 if (autoReceive) {
                     req.decision.complete(true)   // 静默接收，不弹窗不 Toast
                 } else {
@@ -312,18 +409,20 @@ object App {
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
                 progress.keys.filter { !it.startsWith("send") }
                     .forEach { progress.remove(it); speedSamples.remove(it) }
-                // 位置 = 实际写入的目录（server.customSaveDir），失败时显示原因
+                // 位置 = 实际写入的目录（含"存到…"的临时目录），失败时显示原因
                 val location = server.customSaveDir
                     ?: files.firstNotNullOfOrNull { it.path }?.let {
                         it.substringBeforeLast('/')
                     } ?: "Download/LocalTransfer"
                 val finalLocation = server.publishError ?: location
+                val title = if (files.size == 1) files[0].name
+                            else "${files.size} 个文件"
                 chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
-                    false,
-                    if (files.size == 1) files[0].name else "${files.size} 个文件",
-                    files.sumOf { it.size },
-                    System.currentTimeMillis(),
-                    finalLocation, files))
+                    false, title, files.sumOf { it.size },
+                    System.currentTimeMillis(), finalLocation, files))
+                // "存到…"的临时目录只管本批，收完恢复默认（位置已先取出）
+                server.customSaveDir = defaultSaveDir
+                notify("已接收 $title", "保存在 $finalLocation")
             }
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
@@ -332,6 +431,7 @@ object App {
         // 用户自定义过的（save_dir）优先。首次启动没权限时由 UI 弹窗引导授权。
         val saved = prefs.getString("save_dir", "")?.ifBlank { null }
         server.customSaveDir = saved ?: "/storage/emulated/0/Download/LocalTransfer"
+        defaultSaveDir = server.customSaveDir ?: defaultSaveDir
         saveDirDisplay = server.customSaveDir ?: ""
         needsAllFilesPermission = Build.VERSION.SDK_INT >= 30 &&
                 !Environment.isExternalStorageManager()
@@ -398,10 +498,11 @@ object App {
             }
             if (totalLabel.isEmpty()) { sendStatus = null; return@launch }
             val metas = totalLabel
-            // 卡片标题：单文件=文件名；带目录的批次=首目录名；否则=N 个文件
+            // 卡片标题：单文件=文件名；带目录批次=文件夹名（N 个文件）；否则=N 个文件
             val title = if (metas.size == 1) metas[0].first.name
                 else metas.firstOrNull()?.second?.takeIf { it.contains('/') }
                     ?.substringBefore('/')?.ifBlank { null }
+                    ?.let { "$it（${metas.size} 个文件）" }
                 ?: "${metas.size} 个文件"
             val sum = metas.sumOf { it.first.size }
             // 发送进度卡（消息流里，替代顶部状态条）——
@@ -450,7 +551,13 @@ object App {
                     else entries.add(f.uri to (if (prefix.isEmpty()) n else "$prefix/$n"))
                 }
             }
-            val rootName = root?.name?.takeIf { it.isNotBlank() } ?: "文件夹"
+            // 树根名字：SAF 的 root.name 在不少 ROM 上是 null → 用文档 id 尾段兜底
+            val rootName = root?.name?.takeIf { it.isNotBlank() }
+                ?: runCatching {
+                    android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                        .substringAfterLast('/')
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: "文件夹"
             root?.listFiles()?.forEach { f ->
                 val n = f.name ?: return@forEach
                 if (f.isDirectory) walk(f, "$rootName/$n")
@@ -1262,6 +1369,26 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                         MainActivity.toast(ctx, "已复制")
                         menu = false
                     })
+            }
+            // 文件卡：打开单个文件 / 打开所在目录（接收卡才有保存位置）
+            if (e is ChatEntry.FileCard) {
+                if (e.files.size == 1) {
+                    DropdownMenuItem(
+                        text = { Text("打开文件") },
+                        onClick = {
+                            menu = false
+                            MainActivity.openFile(ctx, e.files[0])
+                        })
+                }
+                e.location?.let { loc ->
+                    DropdownMenuItem(
+                        text = { Text("打开目录") },
+                        onClick = {
+                            menu = false
+                            if (!MainActivity.openDirectory(ctx, loc))
+                                MainActivity.toast(ctx, "请到文件管理器查看：$loc")
+                        })
+                }
             }
             DropdownMenuItem(
                 text = { Text("删除") },
