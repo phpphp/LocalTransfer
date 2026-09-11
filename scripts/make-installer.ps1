@@ -23,6 +23,9 @@ Copy-Item target\release\local-transfer.exe $stage
 Copy-Item scripts\install.ps1 $stage
 Copy-Item scripts\add-firewall-rule.ps1 $stage
 Copy-Item assets\README.txt $stage
+Copy-Item assets\icon.ico $stage
+Copy-Item assets\icon-normal.png $stage
+Copy-Item assets\icon-badge.png $stage
 $zip = "dist\LocalTransfer-$Version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path "$stage\*" -DestinationPath $zip

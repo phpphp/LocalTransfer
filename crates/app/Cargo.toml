@@ -23,3 +23,7 @@ qrcode = "0.14"
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55"
 tauri-winrt-notification = "0.8"
+
+[target."cfg(windows)".dependencies]
+tray-icon = "0.24.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

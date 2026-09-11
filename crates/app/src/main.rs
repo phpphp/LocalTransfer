@@ -8,6 +8,7 @@ mod chat;
 mod modals;
 mod root;
 mod sidebar;
+mod tray;
 
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
@@ -133,10 +134,19 @@ fn main() {
                     let view = cx.new(|cx| {
                         RootView::new(config, ui_store, core, event_rx, window, cx)
                     });
+                    // 关闭拦截：按设置（托盘/直接关/询问）
+                    let vh = view.downgrade();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        vh.update(cx, |this, cx| this.handle_close_request(window, cx))
+                            .unwrap_or(true)
+                    });
                     cx.new(|cx| Root::new(view, window, cx))
                 })
                 .expect("打开窗口失败");
             })
             .detach();
+
+            // 系统托盘（未读闪烁/最小化到托盘）
+            tray::start();
         });
 }

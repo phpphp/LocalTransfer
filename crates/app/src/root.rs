@@ -154,17 +154,55 @@ pub fn set_autostart(_on: bool) -> anyhow::Result<()> {
 
 // ---------------------------------------------------------------- 系统通知
 // 仿 QQ/微信的提醒：窗口不在前台时弹 Windows 通知（toast）。
-// 未打包的 Win32 程序没有自己的 AUMID，借 PowerShell 的 AUMID 弹（来源显示 PowerShell）。
+// 未打包的 Win32 程序必须先注册自己的 AUMID（HKCU\Software\Classes\AppUserModelId），
+// 否则 Win10/11 会静默丢弃 toast——之前借 PowerShell 的 AUMID 收不到就是这个原因。
+// show() 内含 COM/WinRT 调用 + sleep，丢后台线程跑。
+
+#[cfg(target_os = "windows")]
+const AUMID: &str = "LocalTransfer.App";
 
 #[cfg(target_os = "windows")]
 pub fn desktop_notify(title: &str, body: &str) {
-    use tauri_winrt_notification::Toast;
-    let _ = Toast::new(
-        "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe",
-    )
-    .title(title)
-    .text1(body)
-    .show();
+    use std::sync::OnceLock;
+    static AUMID_READY: OnceLock<bool> = OnceLock::new();
+    let ready = *AUMID_READY.get_or_init(|| {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu
+            .create_subkey(r"Software\Classes\AppUserModelId\LocalTransfer.App")
+            .map(|(k, _)| k);
+        match key {
+            Ok(k) => {
+                let _ = k.set_value("DisplayName", &"LocalTransfer");
+                // exe 旁带 icon.ico 时用它（安装包/绿色包会附带）
+                let ico = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.join("icon.ico")))
+                    .filter(|p| p.exists());
+                if let Some(ico) = ico {
+                    let uri = format!("file:///{}", ico.to_string_lossy().replace('\\', "/"));
+                    let _ = k.set_value("IconUri", &uri);
+                }
+                true
+            }
+            Err(e) => {
+                tracing::warn!("AUMID 注册失败（通知可能不显示）: {e}");
+                false
+            }
+        }
+    });
+    if !ready {
+        return;
+    }
+    let t = title.to_string();
+    let b = body.to_string();
+    std::thread::spawn(move || {
+        use tauri_winrt_notification::Toast;
+        if let Err(e) = Toast::new(AUMID).title(&t).text1(&b).show() {
+            tracing::warn!("系统通知失败: {e}");
+        }
+    });
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -235,6 +273,13 @@ pub struct RootView {
 
     /// 窗口是否激活（渲染时缓存；仅后台时弹系统通知）
     pub window_active: bool,
+
+    /// 关闭确认弹窗（close_action=ask 时点关闭按钮）
+    pub show_close_dialog: bool,
+    /// 关闭弹窗里勾了"记住我的选择"
+    pub close_remember: bool,
+    /// 跳过询问直接关（关闭弹窗里选了"退出"）
+    pub force_close: bool,
 
     _keep: Vec<Subscription>,
 }
@@ -327,6 +372,9 @@ impl RootView {
             sidebar_drag: None,
             overwrite_req: None,
             window_active: true,
+            show_close_dialog: false,
+            close_remember: false,
+            force_close: false,
             _keep: vec![sub],
         };
         view
@@ -338,6 +386,7 @@ impl RootView {
         }
         self.selected = Some(peer_id.to_string());
         self.unread.insert(peer_id.to_string(), 0);
+        self.sync_tray_badge();
         // 首次进入该会话时读历史；事件流先塞进来的那几条同样已入库，
         // 历史里已包含，直接覆盖即可
         if self.loaded.insert(peer_id.to_string()) {
@@ -425,6 +474,7 @@ impl RootView {
                 let is_selected = self.selected.as_deref() == Some(peer.as_str());
                 if !is_selected {
                     *self.unread.entry(peer.clone()).or_insert(0) += 1;
+                    self.sync_tray_badge();
                 }
                 // 后台时弹系统通知（QQ/微信式提醒）
                 if !self.window_active {
@@ -688,6 +738,46 @@ impl RootView {
             self.accept_request(req, false, cx);
         }
         cx.notify();
+    }
+
+    /// 关闭弹窗的按钮动作（remember 在 render_close_dialog 里由 Checkbox 回调维护）
+    pub fn apply_close_choice(&mut self, action: &str, cx: &mut Context<Self>) {
+        if self.close_remember {
+            self.me.close_action = action.to_string();
+            if let Err(e) = self.me.save() {
+                self.toast(format!("保存设置失败: {e}"), true);
+            }
+        }
+        self.show_close_dialog = false;
+        if action == "tray" {
+            crate::tray::hide_main_window();
+        }
+        cx.notify();
+    }
+
+    /// 关闭按钮：按设置分流（tray=隐藏到托盘；close=真关；ask=弹窗问）
+    pub fn handle_close_request(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        if self.force_close {
+            return true;
+        }
+        match self.me.close_action.as_str() {
+            "tray" => {
+                crate::tray::hide_main_window();
+                false
+            }
+            "close" => true,
+            // 默认 ask
+            _ => {
+                self.show_close_dialog = true;
+                _cx.notify();
+                false
+            }
+        }
+    }
+
+    /// 同步托盘未读标记（unread 汇总变化后调用）
+    pub fn sync_tray_badge(&self) {
+        crate::tray::set_unread(self.unread.values().sum::<usize>() > 0);
     }
 
     /// 确认接收（overwrite=true 时同名文件直接覆盖，否则自动改名避让）
