@@ -19,6 +19,8 @@ pub struct Config {
     pub download_dir: PathBuf,
     /// 自动接收发来的文件（不加确认）
     pub auto_receive: bool,
+    /// 关闭按钮行为：ask=每次询问（默认） tray=最小化到托盘 close=直接退出
+    pub close_action: String,
 }
 
 impl Config {
@@ -45,6 +47,7 @@ impl Config {
             http_port: crate::proto::DEFAULT_HTTP_PORT,
             download_dir: default_download_dir(),
             auto_receive: false,
+            close_action: default_close_action(),
         };
         cfg.save()?;
         Ok(cfg)
@@ -68,7 +71,7 @@ fn default_download_dir() -> PathBuf {
 impl serde::Serialize for Config {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut st = s.serialize_struct("Config", 5)?;
+        let mut st = s.serialize_struct("Config", 6)?;
         st.serialize_field("device_id", &self.device_id)?;
         st.serialize_field("device_name", &self.device_name)?;
         st.serialize_field("http_port", &self.http_port)?;
@@ -77,6 +80,7 @@ impl serde::Serialize for Config {
             &self.download_dir.to_string_lossy().to_string(),
         )?;
         st.serialize_field("auto_receive", &self.auto_receive)?;
+        st.serialize_field("close_action", &self.close_action)?;
         st.end()
     }
 }
@@ -91,6 +95,8 @@ impl<'de> serde::Deserialize<'de> for Config {
             download_dir: String,
             #[serde(default)]
             auto_receive: bool,
+            #[serde(default = "default_close_action")]
+            close_action: String,
         }
         let raw = Raw::deserialize(d)?;
         Ok(Config {
@@ -99,8 +105,13 @@ impl<'de> serde::Deserialize<'de> for Config {
             http_port: raw.http_port,
             download_dir: PathBuf::from(raw.download_dir),
             auto_receive: raw.auto_receive,
+            close_action: raw.close_action,
         })
     }
+}
+
+fn default_close_action() -> String {
+    "ask".into()
 }
 
 /// 首次启动的随机设备名：诗意形容词 + 的 + 自然意象（LocalSend 风格）。

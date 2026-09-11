@@ -14,6 +14,7 @@ fn test_config(name: &str, port: u16) -> Config {
         download_dir: std::env::temp_dir()
             .join(format!("lt-it-{}-{}", name, uuid::Uuid::new_v4())),
         auto_receive: false,
+        close_action: "ask".into(),
     }
 }
 

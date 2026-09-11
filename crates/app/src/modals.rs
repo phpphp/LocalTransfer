@@ -29,6 +29,9 @@ impl RootView {
         if self.overwrite_req.is_some() {
             out.push(self.render_overwrite_modal(cx).into_any_element());
         }
+        if self.show_close_dialog {
+            out.push(self.render_close_dialog(_window, cx).into_any_element());
+        }
         if let Some((text, _, is_error)) = &self.toast {
             let (bg, fg, icon) = if *is_error {
                 (self.danger(cx), self.danger_fg(cx), IconName::TriangleAlert)
@@ -144,6 +147,87 @@ impl RootView {
                                         let _ = this.core.send(UiCommand::ConnectPeer { host });
                                         this.show_connect = false;
                                         cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// 关闭确认弹窗：最小化到托盘 / 退出（勾选"记住"写进设置）
+    fn render_close_dialog(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::component::checkbox::Checkbox;
+
+        v_flex()
+            .id("close-overlay")
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .bg(self.overlay(cx))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                v_flex()
+                    .id("close-card")
+                    .w(px(360.))
+                    .p_4()
+                    .gap_3()
+                    .rounded_2xl()
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(self.border_color(cx))
+                    .bg(self.card_bg(cx))
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("关闭 LocalTransfer？"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(self.fg_muted(cx))
+                            .child("最小化到托盘可保持后台接收与通知"),
+                    )
+                    .child(
+                        Checkbox::new("close-remember")
+                            .label("记住我的选择（不再提示）")
+                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
+                                this.close_remember = *checked;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("close-cancel")
+                                    .label("取消")
+                                    .outline()
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        this.show_close_dialog = false;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("close-to-tray")
+                                    .label("最小化到托盘")
+                                    .primary()
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        this.apply_close_choice("tray", cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("close-quit")
+                                    .label("退出程序")
+                                    .outline()
+                                    .on_click(cx.listener(|this, _ev, window, cx| {
+                                        this.apply_close_choice("close", cx);
+                                        this.force_close = true;
+                                        window.remove_window();
                                     })),
                             ),
                     ),
@@ -323,6 +407,57 @@ impl RootView {
                             .gap_1()
                             .child(div().text_xs().opacity(0.7).child("HTTP 端口（重启后生效）"))
                             .child(Input::new(&self.set_port)),
+                    )
+                    // 关闭按钮行为：三选（同关闭弹窗的"记住选择"）
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .opacity(0.7)
+                                    .child("关闭按钮行为"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("close-act-ask")
+                                            .label("每次询问")
+                                            .when(self.me.close_action == "ask", |b| b.primary())
+                                            .when(self.me.close_action != "ask", |b| b.outline())
+                                            .small()
+                                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                this.me.close_action = "ask".into();
+                                                let _ = this.me.save();
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("close-act-tray")
+                                            .label("最小化到托盘")
+                                            .when(self.me.close_action == "tray", |b| b.primary())
+                                            .when(self.me.close_action != "tray", |b| b.outline())
+                                            .small()
+                                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                this.me.close_action = "tray".into();
+                                                let _ = this.me.save();
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("close-act-close")
+                                            .label("直接退出")
+                                            .when(self.me.close_action == "close", |b| b.primary())
+                                            .when(self.me.close_action != "close", |b| b.outline())
+                                            .small()
+                                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                this.me.close_action = "close".into();
+                                                let _ = this.me.save();
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
                     )
                     // 自动接收：开关即时生效并写盘（独立于下面的"保存"按钮）
                     .child(

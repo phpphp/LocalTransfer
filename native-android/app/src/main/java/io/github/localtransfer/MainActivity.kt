@@ -34,13 +34,18 @@ import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.rounded.Chat
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LaptopMac
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhoneIphone
@@ -1136,6 +1141,24 @@ fun MyQrDialog(onDismiss: () -> Unit) {
 
 // ---------------------------------------------------------------- 会话
 
+/** 底部工具栏入口：图标 + 文字标签 */
+@Composable
+fun ToolEntry(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector,
+              onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        Icon(icon, label, modifier = Modifier.size(22.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(3.dp))
+        Text(label, fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(peerId: String) {
@@ -1145,6 +1168,7 @@ fun ChatScreen(peerId: String) {
     val peer = peers[peerId]
     val msgs = remember(peerId) { App.chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() } }
     var input by remember { mutableStateOf("") }
+    var inputOpen by remember { mutableStateOf(false) }
     var showClear by remember { mutableStateOf(false) }
     val progresses = App.progress.values.filter { it.peerId == peerId }
 
@@ -1220,7 +1244,28 @@ fun ChatScreen(peerId: String) {
                     else ProgressCard(progresses[i - msgs.size])
                 }
             }
-            // 紧凑输入条：文件/文件夹/剪贴板按钮 + 胶囊输入框 + 圆形发送
+            if (!inputOpen) {
+                // 默认工具栏：四个入口一字排开；点"文本"展开消息输入
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly) {
+                    ToolEntry("文件", Icons.Rounded.InsertDriveFile) {
+                        activity?.pick()
+                    }
+                    ToolEntry("文件夹", Icons.Rounded.Folder) {
+                        activity?.pickFolder()
+                    }
+                    ToolEntry("剪贴板", Icons.Rounded.ContentPaste) {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                        val t = cm.primaryClip?.getItemAt(0)
+                            ?.coerceToText(ctx)?.toString()?.trim()
+                        if (t.isNullOrEmpty()) MainActivity.toast(ctx, "剪贴板没有文本")
+                        else App.sendText(peerId, t)
+                    }
+                    ToolEntry("文本", Icons.Rounded.Chat) { inputOpen = true }
+                }
+            } else {
+            // 展开的输入条：文件/文件夹/剪贴板 + 胶囊输入框 + 发送/收起
             Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { activity?.pick() },
@@ -1269,7 +1314,16 @@ fun ChatScreen(peerId: String) {
                         Icon(Icons.AutoMirrored.Rounded.Send, "发送",
                             modifier = Modifier.size(16.dp))
                     }
+                } else {
+                    // 收起输入回到工具栏
+                    IconButton(onClick = { inputOpen = false },
+                        modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, "收起",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
+            }
             }
         }
     }
@@ -1319,12 +1373,25 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                             androidx.compose.foundation.interaction.MutableInteractionSource() },
                         indication = null,
                         onClick = {
-                            // 双击（350ms 内两次点击）= 直接复制文本
                             val now = System.currentTimeMillis()
-                            if (e is ChatEntry.Text && now - lastTap < 350) {
-                                clip.setText(
-                                    androidx.compose.ui.text.AnnotatedString(e.text))
-                                MainActivity.toast(ctx, "已复制")
+                            if (e is ChatEntry.Text) {
+                                // 双击（350ms 内两次点击）= 直接复制文本
+                                if (now - lastTap < 350) {
+                                    clip.setText(
+                                        androidx.compose.ui.text.AnnotatedString(e.text))
+                                    MainActivity.toast(ctx, "已复制")
+                                }
+                            } else if (e is ChatEntry.FileCard) {
+                                // 点击文件卡 = 默认打开：单文件打开文件，
+                                // 多文件/文件夹打开保存目录
+                                if (e.files.size == 1) {
+                                    MainActivity.openFile(ctx, e.files[0])
+                                } else {
+                                    e.location?.let { loc ->
+                                        if (!MainActivity.openDirectory(ctx, loc))
+                                            MainActivity.toast(ctx, "请到文件管理器查看：$loc")
+                                    }
+                                }
                             }
                             lastTap = now
                         },
@@ -1363,6 +1430,9 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
             if (e is ChatEntry.Text) {
                 DropdownMenuItem(
                     text = { Text("复制") },
+                    leadingIcon = {
+                        Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
+                    },
                     onClick = {
                         clip.setText(
                             androidx.compose.ui.text.AnnotatedString(e.text))
@@ -1375,6 +1445,9 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                 if (e.files.size == 1) {
                     DropdownMenuItem(
                         text = { Text("打开文件") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.InsertDriveFile, null, Modifier.size(18.dp))
+                        },
                         onClick = {
                             menu = false
                             MainActivity.openFile(ctx, e.files[0])
@@ -1383,6 +1456,9 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                 e.location?.let { loc ->
                     DropdownMenuItem(
                         text = { Text("打开目录") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.Folder, null, Modifier.size(18.dp))
+                        },
                         onClick = {
                             menu = false
                             if (!MainActivity.openDirectory(ctx, loc))
@@ -1392,6 +1468,10 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
             }
             DropdownMenuItem(
                 text = { Text("删除") },
+                leadingIcon = {
+                    Icon(Icons.Rounded.Delete, null, Modifier.size(18.dp),
+                        tint = androidx.compose.ui.graphics.Color(0xFFDC2626))
+                },
                 onClick = { menu = false; onDelete(e) })
         }
     }
