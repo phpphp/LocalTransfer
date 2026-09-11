@@ -26,4 +26,5 @@ tauri-winrt-notification = "0.8"
 
 [target."cfg(windows)".dependencies]
 tray-icon = "0.24.2"
+image = "0.25"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

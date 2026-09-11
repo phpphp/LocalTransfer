@@ -27,6 +27,18 @@ fn icon_path(name: &str) -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
+/// 载入托盘图标：自己解码 PNG 成 RGBA 交给 tray-icon。
+/// 不能用 Icon::from_path——它在 Windows 走 Win32 LoadImageW(IMAGE_ICON)，
+/// 只认 .ico，喂 .png 直接返回空句柄（日志里"托盘图标缺失"就是这么来的）。
+#[cfg(target_os = "windows")]
+fn load_icon(name: &str) -> Option<tray_icon::Icon> {
+    let path = icon_path(name)?;
+    let img = image::ImageReader::open(&path).ok()?.decode().ok()?;
+    let (w, h) = (img.width(), img.height());
+    let rgba = img.into_rgba8().into_raw();
+    tray_icon::Icon::from_rgba(rgba, w, h).ok()
+}
+
 /// 启动托盘线程（常驻；图标缺失时静默降级为无托盘）
 pub fn start() {
     #[cfg(target_os = "windows")]
@@ -40,12 +52,10 @@ fn run_tray() {
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
-    let normal = icon_path("icon-normal.png")
-        .and_then(|p| tray_icon::Icon::from_path(p, None).ok());
-    let badge = icon_path("icon-badge.png")
-        .and_then(|p| tray_icon::Icon::from_path(p, None).ok());
+    let normal = load_icon("icon-normal.png");
+    let badge = load_icon("icon-badge.png");
     let Some(normal) = normal else {
-        tracing::warn!("托盘图标缺失（icon-normal.png），托盘不可用");
+        tracing::warn!("托盘图标加载失败（icon-normal.png 解码失败或缺失），托盘不可用");
         return;
     };
 
