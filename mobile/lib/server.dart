@@ -124,7 +124,7 @@ class AppServer {
         .toList();
     if (files.isEmpty) return Response(400, body: '文件列表为空');
 
-    // 挂起等 UI 确认（60s 超时，与桌面端一致）
+    // 挂起等 UI 确认（5 分钟超时，与桌面端一致——对方可用"存到…"从容选目录）
     final req = IncomingReq(
         DateTime.now().microsecondsSinceEpoch.toString(), sender, files, Completer<bool>());
     onIncoming(req);

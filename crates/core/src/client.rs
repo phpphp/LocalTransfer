@@ -77,8 +77,8 @@ pub async fn send_files(
             });
         }
         Err(e) => {
-            // 区分用户主动取消与真实错误
-            let reason = if cancel.is_cancelled() {
+            // 区分用户主动取消、等待确认超时与真实错误
+            let reason = if cancel.is_cancelled() || e.downcast_ref::<PrepareTimeout>().is_some() {
                 "已取消".to_string()
             } else {
                 e.to_string()
@@ -90,6 +90,18 @@ pub async fn send_files(
         }
     }
 }
+
+/// prepare 等待接收方确认超时的标记错误——上层据此把传输收场为"已取消"（不提示）
+#[derive(Debug)]
+struct PrepareTimeout;
+
+impl std::fmt::Display for PrepareTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("等待确认超时")
+    }
+}
+
+impl std::error::Error for PrepareTimeout {}
 
 async fn send_files_inner(
     base: &str,
@@ -135,6 +147,12 @@ async fn send_files_inner(
         .await
         .context("连接对方失败")?;
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        let body = resp.text().await.unwrap_or_default();
+        // 等待确认超时 ≠ 拒绝：接收方 5 分钟没点确认，等同用户取消，
+        // 静默收场不提示（提示文案已按需求去掉）
+        if body.contains("超时") {
+            return Err(PrepareTimeout.into());
+        }
         bail!("对方拒绝了传输");
     }
     if !resp.status().is_success() {

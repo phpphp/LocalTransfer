@@ -45,7 +45,7 @@ class TransferApi {
     }
   }
 
-  /// 发一组文件：prepare（等桌面端确认，最多 60s）→ 逐文件流式上传。
+  /// 发一组文件：prepare（等对方确认，最多 5 分钟）→ 逐文件流式上传。
   /// [onProgress] 回调 (fileIndex, transferred, total)。
   Future<void> sendFiles(
     Peer peer,
@@ -65,7 +65,8 @@ class TransferApi {
         .timeout(const Duration(seconds: prepareTimeoutSecs + 5));
     if (pr.statusCode == 403) {
       if (pr.body.contains('超时')) {
-        throw '等待确认超时：请在 60 秒内在电脑端点「接收」';
+        // 等待确认超时：静默取消，不提示（对方没点接收往往就是不想收）
+        return;
       }
       throw '对方拒绝了传输';
     }
