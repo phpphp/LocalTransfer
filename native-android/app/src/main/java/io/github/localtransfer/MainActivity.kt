@@ -34,6 +34,8 @@ import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.DesktopWindows
@@ -77,6 +79,12 @@ class MainActivity : ComponentActivity() {
             if (uris.isNotEmpty()) App.sendPicked(uris)
         }
 
+    // 发送文件夹：SAF 选树 → DocumentFile 递归收集（uri → 带目录前缀的相对路径）
+    private val pickFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri?.let { App.sendFolder(it) }
+        }
+
     // 通知权限（前台服务通知，API 33+）
     private val notifPerm =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -106,6 +114,16 @@ class MainActivity : ComponentActivity() {
                 MainActivity.toast(ctx,
                     if (writable) "已设为 $path"
                     else "已设为 $path（当前不可写，请检查权限）")
+                // 接收弹窗的"存到…"：选完目录并授权 → 直接接收该请求
+                if (App.pickingForReceive) {
+                    App.pickingForReceive = false
+                    App.pendingReq?.let { r ->
+                        r.decision.complete(true)
+                        App.currentPeer = r.peer.id
+                        App.pendingReq = null
+                        MainActivity.toast(ctx, "将保存到 $path")
+                    }
+                }
             } else {
                 MainActivity.toast(ctx, "无法识别该目录的真实路径，请换一个")
             }
@@ -136,6 +154,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun pick() = pickFiles.launch("*/*")
+    fun pickFolder() = pickFolder.launch(null)
 
     companion object {
         fun toast(context: Context, text: String) {
@@ -217,6 +236,8 @@ object App {
     var pendingReq by mutableStateOf<IncomingReq?>(null)
     var sendStatus by mutableStateOf<String?>(null)
     var currentPeer by mutableStateOf<String?>(null)
+    /** 接收弹窗点了"存到…"正在选目录（选完自动接收该请求） */
+    var pickingForReceive = false
     /** 需要"所有文件访问"权限（首次启动 / 权限被收回）→ UI 弹窗引导 */
     var needsAllFilesPermission by mutableStateOf(false)
     /** 当前接收目录（弹窗显示用，选择后立即更新） */
@@ -352,7 +373,11 @@ object App {
         }
     }
 
-    fun sendPicked(uris: List<Uri>) {
+    fun sendPicked(uris: List<Uri>) =
+        sendPickedEntries(uris.map { it to queryName(it) })
+
+    /** 发送一批文件（uri → 相对路径；文件夹选择时 rel 带目录前缀） */
+    fun sendPickedEntries(entries: List<Pair<Uri, String>>) {
         val peerId = currentPeer ?: return
         val p = peers.value[peerId] ?: return
         GlobalScope.launch(Dispatchers.IO) {
@@ -360,21 +385,24 @@ object App {
             val totalLabel = run {
                 // 先读文件名+大小（拷贝到缓存，content URI 无法直接二次流式读）
                 val metas = mutableListOf<Pair<FileMeta, String>>()
-                uris.forEach { uri ->
-                    val name = queryName(uri)
+                entries.forEach { (uri, rel) ->
+                    val name = rel.substringAfterLast('/')
                     val dst = File(ctx.cacheDir, "${UUID.randomUUID()}_$name")
                     ctx.contentResolver.openInputStream(uri)?.use { ins ->
                         dst.outputStream().use { ins.copyTo(it) }
                     } ?: return@forEach
-                    metas.add(FileMeta(UUID.randomUUID().toString(), name, name,
+                    metas.add(FileMeta(UUID.randomUUID().toString(), name, rel,
                         dst.length()) to dst.path)
                 }
                 metas
             }
             if (totalLabel.isEmpty()) { sendStatus = null; return@launch }
             val metas = totalLabel
+            // 卡片标题：单文件=文件名；带目录的批次=首目录名；否则=N 个文件
             val title = if (metas.size == 1) metas[0].first.name
-                        else "${metas.size} 个文件"
+                else metas.firstOrNull()?.second?.takeIf { it.contains('/') }
+                    ?.substringBefore('/')?.ifBlank { null }
+                ?: "${metas.size} 个文件"
             val sum = metas.sumOf { it.first.size }
             // 发送进度卡（消息流里，替代顶部状态条）——
             // 从"等待对方接收"起就带 sending=true（右侧），不再先左后右跳
@@ -405,6 +433,32 @@ object App {
                     speedSamples.remove(sendKey)
                     sendStatus = it.message
                 }
+            }
+        }
+    }
+
+    /** 发送文件夹：SAF 树 uri → DocumentFile 递归收集（rel = 文件夹名/子目录/文件） */
+    fun sendFolder(treeUri: Uri) {
+        if (currentPeer == null) return
+        GlobalScope.launch(Dispatchers.IO) {
+            val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(ctx, treeUri)
+            val entries = mutableListOf<Pair<Uri, String>>()
+            fun walk(d: androidx.documentfile.provider.DocumentFile, prefix: String) {
+                d.listFiles().forEach { f ->
+                    val n = f.name ?: return@forEach
+                    if (f.isDirectory) walk(f, if (prefix.isEmpty()) n else "$prefix/$n")
+                    else entries.add(f.uri to (if (prefix.isEmpty()) n else "$prefix/$n"))
+                }
+            }
+            val rootName = root?.name?.takeIf { it.isNotBlank() } ?: "文件夹"
+            root?.listFiles()?.forEach { f ->
+                val n = f.name ?: return@forEach
+                if (f.isDirectory) walk(f, "$rootName/$n")
+                else entries.add(f.uri to "$rootName/$n")
+            }
+            main.post {
+                if (entries.isEmpty()) MainActivity.toast(ctx, "该文件夹是空的")
+                else sendPickedEntries(entries)
             }
         }
     }
@@ -446,11 +500,18 @@ fun App() {
                 text = { Text("${req.files.size} 个文件 · " +
                         fmtSize(req.files.sumOf { it.size }),
                     color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                confirmButton = { TextButton(onClick = {
-                    // 点接收 → 直接跳进对应会话（看进度），不用再手动找设备
-                    App.currentPeer = req.peer.id
-                    req.decision.complete(true); App.pendingReq = null
-                }) { Text("接收") } },
+                confirmButton = { Row {
+                    TextButton(onClick = {
+                        // 点接收 → 直接跳进对应会话（看进度），不用再手动找设备
+                        App.currentPeer = req.peer.id
+                        req.decision.complete(true); App.pendingReq = null
+                    }) { Text("接收") }
+                    TextButton(onClick = {
+                        // 选文件夹（授权）后自动接收，保存到所选目录
+                        App.pickingForReceive = true
+                        (ctx as? MainActivity)?.pickDir()
+                    }) { Text("存到…") }
+                } },
                 dismissButton = { TextButton(onClick = {
                     req.decision.complete(false); App.pendingReq = null
                 }) { Text("拒绝") } },
@@ -977,6 +1038,7 @@ fun ChatScreen(peerId: String) {
     val peer = peers[peerId]
     val msgs = remember(peerId) { App.chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() } }
     var input by remember { mutableStateOf("") }
+    var showClear by remember { mutableStateOf(false) }
     val progresses = App.progress.values.filter { it.peerId == peerId }
 
     Scaffold(
@@ -1023,6 +1085,12 @@ fun ChatScreen(peerId: String) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回")
                     }
                 },
+                actions = {
+                    // 清空当前会话的聊天记录（内存态，不影响已接收文件）
+                    IconButton(onClick = { showClear = true }) {
+                        Icon(Icons.Rounded.DeleteSweep, "清空记录")
+                    }
+                },
             )
         },
     ) { pad ->
@@ -1045,12 +1113,32 @@ fun ChatScreen(peerId: String) {
                     else ProgressCard(progresses[i - msgs.size])
                 }
             }
-            // 紧凑输入条：小图标按钮 + 胶囊输入框 + 圆形发送
+            // 紧凑输入条：文件/文件夹/剪贴板按钮 + 胶囊输入框 + 圆形发送
             Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { activity?.pick() },
                     modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Rounded.AttachFile, "选择文件",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // 发送文件夹（SAF 选树，递归带目录结构）
+                IconButton(onClick = { activity?.pickFolder() },
+                    modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.Folder, "发送文件夹",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // 发送剪贴板文本
+                IconButton(onClick = {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                    val t = cm.primaryClip?.getItemAt(0)
+                        ?.coerceToText(ctx)?.toString()?.trim()
+                    if (t.isNullOrEmpty()) MainActivity.toast(ctx, "剪贴板没有文本")
+                    else App.sendText(peerId, t)
+                }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.ContentPaste, "发送剪贴板",
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -1077,6 +1165,24 @@ fun ChatScreen(peerId: String) {
                 }
             }
         }
+    }
+    // 清空聊天记录确认
+    if (showClear) {
+        AlertDialog(
+            onDismissRequest = { showClear = false },
+            title = { Text("清空聊天记录", fontWeight = FontWeight.SemiBold) },
+            text = { Text("清空与「${peer?.info?.name ?: "对方"}」的全部消息记录？" +
+                    "（不影响已接收的文件）") },
+            confirmButton = {
+                TextButton(onClick = {
+                    msgs.clear()
+                    showClear = false
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClear = false }) { Text("取消") }
+            },
+        )
     }
 }
 

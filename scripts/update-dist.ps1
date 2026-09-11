@@ -3,7 +3,11 @@
 #   2) Windows packages into dist\ (portable zip + Inno setup exe)
 #   3) Android native: debug + release APKs, copied next to the project and into dist\
 # Usage: & .\scripts\update-dist.ps1   (or powershell -ExecutionPolicy Bypass -File scripts\update-dist.ps1)
-$ErrorAction = "Stop"
+# NOTE: do NOT set $ErrorActionPreference="Stop" here — under PowerShell 5.1 a
+# native command (cargo/gradle) writing to stderr while the caller pipes with
+# 2>&1 turns each stderr line into an ErrorRecord and would abort the script.
+# Failures are handled by explicit $LASTEXITCODE checks below.
+$ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot\..
 
 # Version comes from the workspace Cargo.toml (keep make-installer.ps1 / localtransfer.iss in sync)

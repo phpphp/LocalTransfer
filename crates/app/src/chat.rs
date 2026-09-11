@@ -210,7 +210,7 @@ impl RootView {
         _active_count: usize,
         _active_frac: f64,
         _active_speed: f64,
-        cancel_ids: Vec<String>,
+        _cancel_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // 右侧文字：在线显示地址，离线显示"离线"（仅普通设备会话）
