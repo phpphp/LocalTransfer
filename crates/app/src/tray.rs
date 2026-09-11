@@ -69,12 +69,32 @@ fn run_tray() {
         }
     };
 
+    // Windows 要求：托盘所在线程必须跑 win32 消息循环（否则图标不显示）。
+    // 闪烁与事件轮询挂在 WM_TIMER 上（无窗口 timer 投递到线程队列）。
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, SetTimer, TranslateMessage, MSG, WM_TIMER,
+    };
+    const TIMER_ID: usize = 1;
+    unsafe {
+        SetTimer(std::ptr::null_mut(), TIMER_ID, 700, None);
+    }
+
     let mut blink_on = false;
     let mut tooltip_unread = false;
-    let mut last_tick = std::time::Instant::now();
-    loop {
-        if last_tick.elapsed() >= std::time::Duration::from_millis(700) {
-            last_tick = std::time::Instant::now();
+    let mut msg = MSG {
+        hwnd: std::ptr::null_mut(),
+        message: 0,
+        wParam: 0,
+        lParam: 0,
+        time: 0,
+        pt: windows_sys::Win32::Foundation::POINT { x: 0, y: 0 },
+    };
+    'pump: loop {
+        let r = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
+        if r <= 0 {
+            break 'pump; // WM_QUIT / 错误
+        }
+        if msg.message == WM_TIMER && msg.wParam == TIMER_ID {
             let unread = BADGE.load(Ordering::Relaxed);
             if unread && badge.is_some() {
                 blink_on = !blink_on;
@@ -97,25 +117,27 @@ fn run_tray() {
                 };
                 let _ = tray.set_tooltip(Some(tip));
             }
-        }
-        // 事件（100ms 轮询 channel）
-        if let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            match ev {
-                TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. } => {
-                    show_main_window()
+            // 托盘/菜单事件
+            if let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+                match ev {
+                    TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. } => {
+                        show_main_window()
+                    }
+                    _ => {}
                 }
-                _ => {}
+            }
+            if let Ok(ev) = MenuEvent::receiver().try_recv() {
+                if ev.id == quit_id {
+                    std::process::exit(0);
+                } else if ev.id == open_id {
+                    show_main_window();
+                }
             }
         }
-        // 右键菜单事件（muda 的独立 channel）
-        if let Ok(ev) = MenuEvent::receiver().try_recv() {
-            if ev.id == quit_id {
-                std::process::exit(0);
-            } else if ev.id == open_id {
-                show_main_window();
-            }
+        unsafe {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 

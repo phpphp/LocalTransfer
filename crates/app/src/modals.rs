@@ -156,7 +156,6 @@ impl RootView {
 
     /// 关闭确认弹窗：最小化到托盘 / 退出（勾选"记住"写进设置）
     fn render_close_dialog(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_kit::component::checkbox::Checkbox;
 
         v_flex()
             .id("close-overlay")
@@ -191,13 +190,41 @@ impl RootView {
                             .text_color(self.fg_muted(cx))
                             .child("最小化到托盘可保持后台接收与通知"),
                     )
+                    // 自绘勾选框（组件库 Checkbox 在该 overlay 内点击无响应，
+                    // 换最朴素可靠的实现）
                     .child(
-                        Checkbox::new("close-remember")
-                            .label("记住我的选择（不再提示）")
-                            .on_click(cx.listener(|this, checked: &bool, _window, cx| {
-                                this.close_remember = *checked;
+                        h_flex()
+                            .id("close-remember")
+                            .gap_1p5()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.close_remember = !this.close_remember;
                                 cx.notify();
-                            })),
+                            }))
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .size(px(14.))
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(3.))
+                                    .border_1()
+                                    .border_color(if self.close_remember {
+                                        self.primary(cx)
+                                    } else {
+                                        self.border_color(cx)
+                                    })
+                                    .when(self.close_remember, |el| {
+                                        el.bg(self.primary(cx)).child(
+                                            Icon::new(IconName::Check)
+                                                .with_size(px(10.))
+                                                .text_color(gpui_kit::rgb(0xffffff)),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div().text_sm().child("记住我的选择（不再提示）"),
+                            ),
                     )
                     .child(
                         h_flex()
