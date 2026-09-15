@@ -478,28 +478,49 @@ impl RootView {
             .into_any_element()
     }
 
-    /// 虚拟列表的一行：分组消息或（最后一行）接收请求卡片。
+    /// 虚拟列表的一行：分组消息或（末尾若干行）该设备的接收请求卡片。
     /// 只克隆本行涉及的消息，不搬整个会话。
     fn render_chat_row(&mut self, peer: &str, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let group = self.chats.get(peer).map(|msgs| {
-            let groups = group_transfers(msgs);
-            groups.get(ix).map(|(start, end)| msgs[*start..*end].to_vec())
-        });
-        match group {
-            Some(Some(rows)) if rows.len() == 1 => self.render_message(&rows[0], cx),
-            Some(Some(rows)) => self.render_batch(&rows, cx),
-            Some(None) => self.render_request_card(cx),
-            None => div().into_any_element(),
+        let groups_len = self
+            .chats
+            .get(peer)
+            .map(|msgs| group_transfers(msgs).len())
+            .unwrap_or(0);
+        if ix < groups_len {
+            let rows = self.chats.get(peer).map(|msgs| {
+                let groups = group_transfers(msgs);
+                groups.get(ix).map(|(start, end)| msgs[*start..*end].to_vec())
+            });
+            match rows {
+                Some(Some(rows)) if rows.len() == 1 => self.render_message(&rows[0], cx),
+                Some(Some(rows)) => self.render_batch(&rows, cx),
+                _ => div().into_any_element(),
+            }
+        } else {
+            // 消息行之后是挂起请求卡（该设备的第 ix - groups_len 张）
+            let k = ix - groups_len;
+            self.render_request_card(peer, k, cx)
         }
     }
 
-    /// 接收请求卡片：替代原先的全屏弹窗，直接出现在会话底部
-    fn render_request_card(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(req) = self.incoming.clone() else {
+    /// 接收请求卡片：替代原先的全屏弹窗，直接出现在会话底部。
+    /// 同一设备可挂多张（请求队列，新请求不再顶掉旧的），[k] 为该设备第几张。
+    fn render_request_card(&mut self, peer: &str, k: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(req) = self
+            .incoming
+            .iter()
+            .filter(|r| r.peer.info.id == peer)
+            .nth(k)
+            .cloned()
+        else {
             return div().into_any_element();
         };
         let total: u64 = req.files.iter().map(|f| f.size).sum();
         let peer_name = req.peer.info.name.clone();
+        let req_id = req.req_id.clone();
+        let reject_id = req.req_id.clone();
+        let accept_id = req.req_id.clone();
+        let save_id = req.req_id.clone();
 
         Message::new()
             .alignment(MessageAlignment::Start)
@@ -570,30 +591,31 @@ impl RootView {
                                     .w_full()
                                     .gap_2()
                                     .child(
-                                        Button::new("req-reject")
+                                        Button::new(format!("req-reject-{req_id}"))
                                             .label("拒绝")
                                             .outline()
                                             .small()
                                             .flex_1()
                                             .on_click(cx.listener(
                                                 move |this, _ev, _window, cx| {
-                                                    if let Some(r) = this.incoming.take() {
-                                                        let _ = this.core.send(
-                                                            UiCommand::RespondRequest {
-                                                                req_id: r.req_id,
-                                                                accept: false,
-                                                                save_dir: None,
-                                                                overwrite: false,
-                                                            },
-                                                        );
-                                                    }
+                                                    // 只回绝这一张卡对应的请求
+                                                    this.incoming
+                                                        .retain(|r| r.req_id != reject_id);
+                                                    let _ = this.core.send(
+                                                        UiCommand::RespondRequest {
+                                                            req_id: reject_id.clone(),
+                                                            accept: false,
+                                                            save_dir: None,
+                                                            overwrite: false,
+                                                        },
+                                                    );
                                                     this.sync_scroller(cx);
                                                     cx.notify();
                                                 },
                                             )),
                                     )
                                     .child(
-                                        Button::new("req-accept")
+                                        Button::new(format!("req-accept-{req_id}"))
                                             .label("接收")
                                             .primary()
                                             .flex_1()
@@ -601,19 +623,19 @@ impl RootView {
                                             .on_click(cx.listener(
                                                 move |this, _ev, _window, cx| {
                                                     // 同名文件预检：有冲突先弹覆盖确认
-                                                    this.ask_overwrite(cx);
+                                                    this.ask_overwrite(&accept_id, cx);
                                                 },
                                             )),
                                     )
                                     .child(
-                                        Button::new("req-save-to")
+                                        Button::new(format!("req-save-to-{req_id}"))
                                             .label("存到…")
                                             .outline()
                                             .small()
                                             .flex_1()
                                             .on_click(cx.listener(
                                                 move |this, _ev, window, cx| {
-                                                    this.save_request_to(window, cx);
+                                                    this.save_request_to(&save_id, window, cx);
                                                 },
                                             )),
                                     ),
@@ -625,7 +647,8 @@ impl RootView {
 
     /// 接收请求「存到…」：选目录后按该目录接收本批文件
     /// （只改本批接收目录，不改默认下载目录设置）
-    fn save_request_to(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn save_request_to(&mut self, req_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let req_id = req_id.to_string();
         cx.spawn_in(window, async move |this, cx| {
             let picked = match cx.update(|_, cx| {
                 cx.prompt_for_paths(PathPromptOptions {
@@ -640,15 +663,15 @@ impl RootView {
             };
             if let Some(dir) = picked.and_then(|v| v.into_iter().next()) {
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(req) = this.incoming.take() {
-                        // 自选目录：同名冲突由 core 自动改名避让（overwrite=false）
-                        let _ = this.core.send(UiCommand::RespondRequest {
-                            req_id: req.req_id,
-                            accept: true,
-                            save_dir: Some(dir),
-                            overwrite: false,
-                        });
-                    }
+                    // 只处理这张卡对应的请求（队列里可能还挂着别的）
+                    this.incoming.retain(|r| r.req_id != req_id);
+                    // 自选目录：同名冲突由 core 自动改名避让（overwrite=false）
+                    let _ = this.core.send(UiCommand::RespondRequest {
+                        req_id,
+                        accept: true,
+                        save_dir: Some(dir),
+                        overwrite: false,
+                    });
                     this.sync_scroller(cx);
                     cx.notify();
                 });

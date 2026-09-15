@@ -236,7 +236,8 @@ pub struct RootView {
 
     /// 活动传输（按 transfer_id），完成后保留至用户关闭或会话切换
     pub transfers: Vec<TransferState>,
-    pub incoming: Option<IncomingReq>,
+    /// 待确认的接收请求队列（可同时挂多个：新请求不再顶掉/拒绝旧的）
+    pub incoming: Vec<IncomingReq>,
 
     pub input: Entity<TextareaState>,
     pub toast: Option<(String, Instant, bool)>, // (文本, 时间, is_error)
@@ -355,7 +356,7 @@ impl RootView {
             loaded: std::collections::HashSet::new(),
             unread: HashMap::new(),
             transfers: Vec::new(),
-            incoming: None,
+            incoming: Vec::new(),
             input,
             toast: None,
             scroller,
@@ -497,15 +498,8 @@ impl RootView {
                         &format!("{} 个文件 · 点击处理", files.len()),
                     );
                 }
-                // 同一时间只展示最新请求；旧的按拒绝处理（对方收到 403）
-                if let Some(old) = self.incoming.take() {
-                    let _ = self.core.send(UiCommand::RespondRequest {
-                        req_id: old.req_id,
-                        accept: false,
-                        save_dir: None,
-                        overwrite: false,
-                    });
-                }
+                // 多个待确认请求并存入队（旧的不再被新请求顶掉/拒绝——
+                // 曾经新请求直接回绝旧请求 403，对方的卡片秒变"被拒绝"）
                 // 自动接收：直接接受，不进会话卡片
                 if self.me.auto_receive {
                     let _ = self.core.send(UiCommand::RespondRequest {
@@ -520,16 +514,14 @@ impl RootView {
                     );
                 } else {
                     let peer_id = peer.info.id.clone();
-                    self.incoming = Some(IncomingReq { req_id, peer, files });
+                    self.incoming.push(IncomingReq { req_id, peer, files });
                     // 请求卡片渲染在对应会话里——切过去让用户立刻看到
                     self.select_peer(&peer_id, cx);
                 }
             }
             CoreEvent::RequestExpired { req_id } => {
-                // 只关掉对应的弹窗（新请求可能已经顶掉了旧的）
-                if self.incoming.as_ref().is_some_and(|r| r.req_id == req_id) {
-                    self.incoming = None;
-                }
+                // 只移除对应的请求（发送方取消/超时），其余照常
+                self.incoming.retain(|r| r.req_id != req_id);
             }
             CoreEvent::TransferStarted {
                 transfer_id,
@@ -700,22 +692,18 @@ impl RootView {
         }
     }
 
-    /// 当前会话的渲染行数：分组后的消息 + （有挂起请求时）1 张请求卡片
+    /// 当前会话的渲染行数：分组后的消息 + 该设备的每张挂起请求卡片
     pub(crate) fn chat_row_count(&self, peer: &str) -> usize {
         let groups = self
             .chats
             .get(peer)
             .map(|msgs| crate::chat::group_count(msgs))
             .unwrap_or(0);
-        let extra = if self
+        let extra = self
             .incoming
-            .as_ref()
-            .is_some_and(|r| r.peer.info.id == peer)
-        {
-            1
-        } else {
-            0
-        };
+            .iter()
+            .filter(|r| r.peer.info.id == peer)
+            .count();
         groups + extra
     }
 
@@ -723,9 +711,9 @@ impl RootView {
         self.chats.entry(peer).or_default().push(msg);
     }
 
-    /// 接收按钮：预检下载目录同名冲突——有则弹覆盖确认，无则直接接收
-    pub fn ask_overwrite(&mut self, cx: &mut Context<Self>) {
-        let Some(req) = self.incoming.clone() else {
+    /// 接收按钮（按 req_id）：预检下载目录同名冲突——有则弹覆盖确认，无则直接接收
+    pub fn ask_overwrite(&mut self, req_id: &str, cx: &mut Context<Self>) {
+        let Some(req) = self.incoming.iter().find(|r| r.req_id == req_id).cloned() else {
             return;
         };
         let conflict = req
@@ -788,12 +776,12 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         let _ = self.core.send(UiCommand::RespondRequest {
-            req_id: req.req_id,
+            req_id: req.req_id.clone(),
             accept: true,
             save_dir: None,
             overwrite,
         });
-        self.incoming = None;
+        self.incoming.retain(|r| r.req_id != req.req_id);
         self.overwrite_req = None;
         self.sync_scroller(cx);
         cx.notify();

@@ -121,10 +121,11 @@ class MainActivity : ComponentActivity() {
                 if (App.pickingForReceive) {
                     App.pickingForReceive = false
                     App.server.customSaveDir = path
-                    App.pendingReq?.let { r ->
+                    // 完成队头那个请求（正在弹窗展示的）
+                    App.pendingReqs.firstOrNull()?.let { r ->
                         r.decision.complete(true)
                         App.currentPeer = r.peer.id
-                        App.pendingReq = null
+                        App.pendingReqs.remove(r)
                         MainActivity.toast(ctx, "本批将保存到 $path")
                     }
                     return@registerForActivityResult
@@ -319,7 +320,9 @@ object App {
     val peers get() = disc.peers
     val chats = mutableStateMapOf<String, MutableList<ChatEntry>>()
     val progress = mutableStateMapOf<String, RecvProgress>()
-    var pendingReq by mutableStateOf<IncomingReq?>(null)
+    /** 待确认的接收请求队列（可同时挂多个：新请求不再顶掉旧的——
+     *  曾经单槽 pendingReq 被新请求覆盖，旧请求的 Completer 永不完成，对端只能等超时） */
+    val pendingReqs = mutableStateListOf<IncomingReq>()
     var sendStatus by mutableStateOf<String?>(null)
     var currentPeer by mutableStateOf<String?>(null)
     /** 接收弹窗点了"存到…"正在选目录（选完自动接收该请求） */
@@ -427,7 +430,7 @@ object App {
                 if (autoReceive) {
                     req.decision.complete(true)   // 静默接收，不弹窗不 Toast
                 } else {
-                    pendingReq = req
+                    pendingReqs.add(req)
                 }
             }
             override fun onProgress(token: String, p: RecvProgress) {
@@ -629,7 +632,8 @@ fun App() {
     MaterialTheme(colorScheme = colors) {
         val peerId = App.currentPeer
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
-        App.pendingReq?.let { req ->
+        // 队头请求先弹，处理完（接收/拒绝/存到）自动弹下一个
+        App.pendingReqs.firstOrNull()?.let { req ->
             // 卡片式接收弹窗：渐变图标 + 摘要胶囊 + 拒绝/接收/存到…
             androidx.compose.ui.window.Dialog(
                 onDismissRequest = { },
@@ -673,6 +677,13 @@ fun App() {
                         Spacer(Modifier.height(2.dp))
                         Text("想发送文件给你", fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        // 后面还排着队：处理完这张自动弹下一张
+                        if (App.pendingReqs.size > 1) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("（处理完还有 ${App.pendingReqs.size - 1} 个请求）",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         Spacer(Modifier.height(14.dp))
                         // 文件数 + 大小摘要胶囊
                         androidx.compose.material3.Surface(
@@ -703,7 +714,8 @@ fun App() {
                         ) {
                             androidx.compose.material3.OutlinedButton(
                                 onClick = {
-                                    req.decision.complete(false); App.pendingReq = null
+                                    req.decision.complete(false)
+                                    App.pendingReqs.remove(req)
                                 },
                                 colors = androidx.compose.material3.ButtonDefaults
                                     .outlinedButtonColors(
@@ -723,7 +735,8 @@ fun App() {
                                 onClick = {
                                     // 点接收 → 直接跳进对应会话（看进度）
                                     App.currentPeer = req.peer.id
-                                    req.decision.complete(true); App.pendingReq = null
+                                    req.decision.complete(true)
+                                    App.pendingReqs.remove(req)
                                 },
                                 shape = RoundedCornerShape(13.dp),
                                 modifier = Modifier.weight(1f)
