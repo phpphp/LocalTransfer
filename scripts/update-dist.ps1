@@ -42,21 +42,21 @@ if (-not $Gradle) {
         Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $Gradle) { Write-Output "GRADLE NOT FOUND in wrapper dists"; exit 1 }
-Push-Location native-android
+Push-Location mobile/native-android
 & $Gradle assembleDebug assembleRelease --console=plain | Select-Object -Last 3
 $androidOk = $LASTEXITCODE
 Pop-Location
 if ($androidOk -ne 0) { Write-Output "ANDROID BUILD FAILED"; exit 1 }
 
-Copy-Item native-android\app\build\outputs\apk\release\app-release.apk native-android\app-release.apk -Force
-Copy-Item native-android\app\build\outputs\apk\debug\app-debug.apk native-android\app-debug.apk -Force
-Copy-Item native-android\app\build\outputs\apk\release\app-release.apk "dist\LocalTransfer-$Version-android-native.apk" -Force
+Copy-Item mobile/native-android\app\build\outputs\apk\release\app-release.apk mobile/native-android\app-release.apk -Force
+Copy-Item mobile/native-android\app\build\outputs\apk\debug\app-debug.apk mobile/native-android\app-debug.apk -Force
+Copy-Item mobile/native-android\app\build\outputs\apk\release\app-release.apk "dist\LocalTransfer-$Version-android-native.apk" -Force
 
 Write-Output "== done =="
 Write-Output "-- dist --"
 Get-ChildItem dist\*$Version* | Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
 Write-Output "-- android apks --"
-Get-Item native-android\app-debug.apk, native-android\app-release.apk |
+Get-Item mobile/native-android\app-debug.apk, mobile/native-android\app-release.apk |
     Select-Object Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
 Write-Output "-- rust exes --"
 Get-Item target\debug\local-transfer.exe, target\release\local-transfer.exe |

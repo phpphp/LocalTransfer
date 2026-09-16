@@ -13,10 +13,10 @@ dist/
 /new_a.png
 /new_b.png
 
-# Flutter（mobile/ 下还会有一份）
-.dart_tool/
-.flutter-plugins*
+# Android/移动构建产物（mobile/native-* 下还有各自的）
 build/
+.gradle/
+local.properties
 
 # IDE / 系统
 .vscode/
