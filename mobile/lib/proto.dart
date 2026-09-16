@@ -14,7 +14,7 @@ const String discoveryGroup = '239.192.71.82';
 const int discoveryPort = 17878;
 const int defaultHttpPort = 17878;
 const int deviceTimeoutSecs = 15;
-const int prepareTimeoutSecs = 60;
+const int prepareTimeoutSecs = 300;
 
 class DeviceInfo {
   final String id;

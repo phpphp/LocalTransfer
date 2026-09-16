@@ -19,6 +19,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,13 +32,25 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Casino
+import androidx.compose.material.icons.automirrored.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ContentPaste
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.rounded.Chat
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LaptopMac
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhoneIphone
@@ -76,6 +89,12 @@ class MainActivity : ComponentActivity() {
             if (uris.isNotEmpty()) App.sendPicked(uris)
         }
 
+    // 发送文件夹：SAF 选树 → DocumentFile 递归收集（uri → 带目录前缀的相对路径）
+    private val pickFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri?.let { App.sendFolder(it) }
+        }
+
     // 通知权限（前台服务通知，API 33+）
     private val notifPerm =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -97,6 +116,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (path != null) {
+                // 接收弹窗的"存到…"：只临时改本次接收目录（不落库、不动设置显示），
+                // 批次完成自动恢复默认
+                if (App.pickingForReceive) {
+                    App.pickingForReceive = false
+                    App.server.customSaveDir = path
+                    // 完成队头那个请求（正在弹窗展示的）
+                    App.pendingReqs.firstOrNull()?.let { r ->
+                        r.decision.complete(true)
+                        App.currentPeer = r.peer.id
+                        App.pendingReqs.remove(r)
+                        MainActivity.toast(ctx, "本批将保存到 $path")
+                    }
+                    return@registerForActivityResult
+                }
                 ctx.getSharedPreferences("lt", Context.MODE_PRIVATE)
                     .edit().putString("save_dir", path).apply()
                 App.server.customSaveDir = path
@@ -116,7 +149,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         App.init(applicationContext)
         setContent { App() }
-        // 通知权限（API 33+，前台服务通知用）
+        // 通知权限（API 33+，前台服务通知与消息提醒用）
         if (Build.VERSION.SDK_INT >= 33) {
             notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -124,20 +157,29 @@ class MainActivity : ComponentActivity() {
         startForegroundService(Intent(this, TransferService::class.java))
     }
 
+    override fun onResume() { super.onResume(); App.isForeground = true }
+    override fun onPause() { super.onPause(); App.isForeground = false }
+
     fun startScan() {
+        // 自定义竖屏卡片式扫码页（库自带 CaptureActivity 是横屏满屏布局）
         scanLauncher.launch(ScanOptions().apply {
             setPrompt("对准电脑端二维码（http://IP:端口）")
             setBeepEnabled(false)
             setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setCaptureActivity(LandscapeCaptureActivity::class.java)
+            setCaptureActivity(PortraitCaptureActivity::class.java)
         })
     }
 
     fun pick() = pickFiles.launch("*/*")
+    fun pickFolder() = pickFolder.launch(null)
 
     companion object {
-        /** 打开接收的文件。
-         *  URI 用 content://（MediaStore，可跨应用授权）；
+        fun toast(context: Context, text: String) {
+            android.widget.Toast.makeText(context, text,
+                android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+        /** 打开文件。URI 用 content://（MediaStore，可跨应用授权）；
          *  真实路径用 FileProvider（file:// 直传 API 24+ 抛 FileUriExposedException） */
         fun openFile(context: Context, f: ReceivedFile) {
             try {
@@ -146,7 +188,9 @@ class MainActivity : ComponentActivity() {
                         ?: f.path?.let {
                             androidx.core.content.FileProvider.getUriForFile(
                                 context, "${context.packageName}.fileprovider", File(it))
-                        } ?: return
+                        } ?: run {
+                            toast(context, "文件路径不可用"); return
+                        }
                     setDataAndType(uri, mimeOf(f.name))
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
@@ -156,22 +200,100 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /** 扩展名 → MIME：决定系统用哪个应用打开——
+         *  apk → 包安装器；图片/视频 → 图库（默认应用）；其余给准确 MIME 走默认应用 */
         private fun mimeOf(name: String): String = when (
             name.substringAfterLast('.', "").lowercase()) {
+            "apk" -> "application/vnd.android.package-archive"
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "gif" -> "image/gif"
             "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "heic", "heif" -> "image/heic"
             "mp4" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "mov" -> "video/quicktime"
+            "3gp" -> "video/3gpp"
             "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "flac" -> "audio/flac"
             "pdf" -> "application/pdf"
             "txt", "md", "log" -> "text/plain"
+            "doc" -> "application/msword"
+            "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "xls" -> "application/vnd.ms-excel"
+            "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "ppt" -> "application/vnd.ms-powerpoint"
+            "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             else -> "application/octet-stream"
         }
 
-        fun toast(context: Context, text: String) {
-            android.widget.Toast.makeText(context, text,
-                android.widget.Toast.LENGTH_SHORT).show()
+        /** 打开目录（文件管理器定位到它）。externalstorage.documents 的
+         *  文档 id 支持 primary: 前缀子路径，多数 ROM 的文件管理器认；
+         *  打不开返回 false（调用方 toast 出路径兜底）。 */
+        fun openDirectory(context: Context, dirPath: String): Boolean {
+            val rel = dirPath.removePrefix("/storage/emulated/0/")
+                .trimEnd('/')
+            if (rel.isEmpty()) return false
+            val docUri = runCatching {
+                android.provider.DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents", "primary:$rel")
+            }.getOrNull() ?: return false
+            val i = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(docUri,
+                    android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            return runCatching { context.startActivity(i) }.isSuccess
+        }
+
+        /** 跳厂商"自启动 / 允许后台活动"管理页。
+         *  各家都是私有页面（无标准 API），按厂商逐个尝试，兜底应用详情页。
+         *  返回 false = 一个都没打开。 */
+        fun jumpAutoStart(context: Context): Boolean {
+            val m = Build.MANUFACTURER.lowercase()
+            val candidates = mutableListOf<Intent>()
+            when {
+                m.contains("xiaomi") || m.contains("redmi") -> candidates += Intent()
+                    .setComponent(android.content.ComponentName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.autostart.AutoStartManagementActivity"))
+                m.contains("huawei") || m.contains("honor") -> candidates += Intent()
+                    .setComponent(android.content.ComponentName(
+                        "com.huawei.systemmanager",
+                        "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"))
+                m.contains("oppo") || m.contains("realme") || m.contains("oneplus") -> {
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.coloros.safecenter",
+                        "com.coloros.safecenter.permission.startup.StartupAppListActivity"))
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.oppo.safe",
+                        "com.oppo.safe.permission.startup.StartupAppListActivity"))
+                }
+                m.contains("vivo") || m.contains("iqoo") -> {
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.vivo.permissionmanager",
+                        "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"))
+                    candidates += Intent().setComponent(android.content.ComponentName(
+                        "com.iqoo.secure",
+                        "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager"))
+                }
+                m.contains("meizu") -> candidates += Intent(
+                    "com.meizu.safe.security.SHOW_APPSEC")
+                    .putExtra("packageName", context.packageName)
+            }
+            // 兜底：应用详情页（原生/未识别厂商，用户手动找权限项）
+            candidates += Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:${context.packageName}"))
+            for (i in candidates) {
+                if (runCatching {
+                        context.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }.isSuccess) return true
+            }
+            return false
         }
 
         fun qrBitmap(content: String, size: Int = 512): Bitmap? = runCatching {
@@ -198,15 +320,77 @@ object App {
     val peers get() = disc.peers
     val chats = mutableStateMapOf<String, MutableList<ChatEntry>>()
     val progress = mutableStateMapOf<String, RecvProgress>()
-    var pendingReq by mutableStateOf<IncomingReq?>(null)
+    /** 待确认的接收请求队列（可同时挂多个：新请求不再顶掉旧的——
+     *  曾经单槽 pendingReq 被新请求覆盖，旧请求的 Completer 永不完成，对端只能等超时） */
+    val pendingReqs = mutableStateListOf<IncomingReq>()
     var sendStatus by mutableStateOf<String?>(null)
     var currentPeer by mutableStateOf<String?>(null)
+    /** 接收弹窗点了"存到…"正在选目录（选完自动接收该请求） */
+    var pickingForReceive = false
+    /** 应用是否在前台（MainActivity onResume/onPause 维护；
+     *  仅后台时发系统通知，前台看着聊天界面就不打扰） */
+    var isForeground = false
+
+    /** 仿 QQ/微信的系统通知（横幅+声音；仅后台时发） */
+    fun notify(title: String, text: String) {
+        if (isForeground) return
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(android.app.NotificationChannel(
+                "lt_notify", "消息提醒",
+                android.app.NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "收到消息或文件时提醒"
+            })
+        }
+        val pi = android.app.PendingIntent.getActivity(ctx, 0,
+            Intent(ctx, MainActivity::class.java),
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                    or android.app.PendingIntent.FLAG_IMMUTABLE)
+        val builder = if (Build.VERSION.SDK_INT >= 26)
+            android.app.Notification.Builder(ctx, "lt_notify")
+        else @Suppress("DEPRECATION") android.app.Notification.Builder(ctx)
+        val n = builder
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(System.currentTimeMillis().toInt(), n)
+    }
     /** 需要"所有文件访问"权限（首次启动 / 权限被收回）→ UI 弹窗引导 */
     var needsAllFilesPermission by mutableStateOf(false)
     /** 当前接收目录（弹窗显示用，选择后立即更新） */
     var saveDirDisplay by mutableStateOf("")
+    /** 持久化的默认接收目录（"存到…"的临时目录在批次完成后恢复回它） */
+    var defaultSaveDir: String =
+        "/storage/emulated/0/Download/LocalTransfer"
     /** 自动接收文件 */
     var autoReceive by mutableStateOf(false)
+    /** 主题模式：null=跟随系统 */
+    var themeMode by mutableStateOf<String?>(null)
+    /** 本机设备名（系统"设备名称"，回落型号；改名弹窗"使用本机设备名"用） */
+    var phoneModel by mutableStateOf("")
+    /** 速度采样表：token → (纳秒时间, 累计字节, 上次速度) */
+    internal val speedSamples = HashMap<String, Triple<Long, Long, Double>>()
+
+    /** 传输速度采样（收发共用）：<400ms 沿用旧值；字节回退=换文件，重置基线保留旧速度。
+     *  只在主线程调（收发回调都经 main.post 到这里）。 */
+    fun sampleSpeed(key: String, transferred: Long): Double {
+        val now = System.nanoTime()
+        val prev = speedSamples[key]
+        if (prev != null) {
+            val dt = (now - prev.first) / 1e9
+            if (dt < 0.4) return prev.third
+            val delta = transferred - prev.second
+            val speed = if (delta > 0) delta / dt else prev.third
+            speedSamples[key] = Triple(now, transferred, speed)
+            return speed
+        }
+        speedSamples[key] = Triple(now, transferred, 0.0)
+        return 0.0
+    }
 
     fun init(context: Context) {
         if (inited) return
@@ -218,39 +402,57 @@ object App {
             id = UUID.randomUUID().toString()
             prefs.edit().putString("device_id", id).apply()
         }
+        // 本机设备名：系统设置里的"设备名称"（用户自定义过的，API 25+）
+        // → 型号 Build.MODEL → 空字符串（键名用字面量避开 API 24 的常量 lint）
+        phoneModel = android.provider.Settings.Global
+            .getString(ctx.contentResolver, "device_name")
+            ?.trim()?.ifBlank { null }
+            ?: Build.MODEL.trim().ifBlank { null }
+            ?: ""
+        // 默认设备名 = 本机设备名；未存过时用它，不落库
+        //（用户改过名 / 点过"随机"才持久化，保持系统名的动态性）
+        themeMode = prefs.getString("theme_mode", null)
         val name = prefs.getString("device_name", null)
-            ?: randomPoeticName().also { prefs.edit().putString("device_name", it).apply() }
+            ?: phoneModel.ifBlank { randomPoeticName().also {
+                prefs.edit().putString("device_name", it).apply() } }
         autoReceive = prefs.getBoolean("auto_receive", false)
         me = DeviceInfo(id, name, "android", 0)
         api = TransferApi(me)
         server = MiniHttpServer(me, ctx, object : MiniHttpServer.Callbacks {
             override fun onMessage(peerId: String, peerName: String, text: String) {
-                chats.getOrPut(peerId) { mutableListOf() }
+                chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }
                     .add(ChatEntry.Text(false, text, System.currentTimeMillis()))
+                notify(peerName, text.take(40))
             }
             override fun onIncoming(req: IncomingReq) {
+                notify("${req.peer.name} 想发送文件",
+                    "${req.files.size} 个文件 · 点击处理")
                 if (autoReceive) {
                     req.decision.complete(true)   // 静默接收，不弹窗不 Toast
                 } else {
-                    pendingReq = req
+                    pendingReqs.add(req)
                 }
             }
-            override fun onProgress(token: String, p: RecvProgress) { progress[token] = p }
+            override fun onProgress(token: String, p: RecvProgress) {
+                progress[token] = p.copy(speedBps = sampleSpeed(token, p.transferred))
+            }
             override fun onBatchDone(peerId: String, files: List<ReceivedFile>) {
                 progress.keys.filter { !it.startsWith("send") }
-                    .forEach { progress.remove(it) }
-                // 位置 = 实际写入的目录（server.customSaveDir），失败时显示原因
+                    .forEach { progress.remove(it); speedSamples.remove(it) }
+                // 位置 = 实际写入的目录（含"存到…"的临时目录），失败时显示原因
                 val location = server.customSaveDir
                     ?: files.firstNotNullOfOrNull { it.path }?.let {
                         it.substringBeforeLast('/')
                     } ?: "Download/LocalTransfer"
                 val finalLocation = server.publishError ?: location
-                chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
-                    false,
-                    if (files.size == 1) files[0].name else "${files.size} 个文件",
-                    files.sumOf { it.size },
-                    System.currentTimeMillis(),
-                    finalLocation, files))
+                val title = if (files.size == 1) files[0].name
+                            else "${files.size} 个文件"
+                chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
+                    false, title, files.sumOf { it.size },
+                    System.currentTimeMillis(), finalLocation, files))
+                // "存到…"的临时目录只管本批，收完恢复默认（位置已先取出）
+                server.customSaveDir = defaultSaveDir
+                notify("已接收 $title", "保存在 $finalLocation")
             }
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
@@ -259,6 +461,7 @@ object App {
         // 用户自定义过的（save_dir）优先。首次启动没权限时由 UI 弹窗引导授权。
         val saved = prefs.getString("save_dir", "")?.ifBlank { null }
         server.customSaveDir = saved ?: "/storage/emulated/0/Download/LocalTransfer"
+        defaultSaveDir = server.customSaveDir ?: defaultSaveDir
         saveDirDisplay = server.customSaveDir ?: ""
         needsAllFilesPermission = Build.VERSION.SDK_INT >= 30 &&
                 !Environment.isExternalStorageManager()
@@ -292,7 +495,7 @@ object App {
 
     fun sendText(peerId: String, text: String) {
         val p = peers.value[peerId] ?: return
-        chats.getOrPut(peerId) { mutableListOf() }
+        chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }
             .add(ChatEntry.Text(true, text, System.currentTimeMillis()))
         GlobalScope.launch(Dispatchers.IO) {
             runCatching { api.sendText(p, text) }
@@ -300,7 +503,11 @@ object App {
         }
     }
 
-    fun sendPicked(uris: List<Uri>) {
+    fun sendPicked(uris: List<Uri>) =
+        sendPickedEntries(uris.map { it to queryName(it) })
+
+    /** 发送一批文件（uri → 相对路径；文件夹选择时 rel 带目录前缀） */
+    fun sendPickedEntries(entries: List<Pair<Uri, String>>) {
         val peerId = currentPeer ?: return
         val p = peers.value[peerId] ?: return
         GlobalScope.launch(Dispatchers.IO) {
@@ -308,46 +515,90 @@ object App {
             val totalLabel = run {
                 // 先读文件名+大小（拷贝到缓存，content URI 无法直接二次流式读）
                 val metas = mutableListOf<Pair<FileMeta, String>>()
-                uris.forEach { uri ->
-                    val name = queryName(uri)
+                entries.forEach { (uri, rel) ->
+                    val name = rel.substringAfterLast('/')
                     val dst = File(ctx.cacheDir, "${UUID.randomUUID()}_$name")
                     ctx.contentResolver.openInputStream(uri)?.use { ins ->
                         dst.outputStream().use { ins.copyTo(it) }
                     } ?: return@forEach
-                    metas.add(FileMeta(UUID.randomUUID().toString(), name, name,
+                    metas.add(FileMeta(UUID.randomUUID().toString(), name, rel,
                         dst.length()) to dst.path)
                 }
                 metas
             }
             if (totalLabel.isEmpty()) { sendStatus = null; return@launch }
             val metas = totalLabel
+            // 卡片标题：单文件=文件名；带目录批次=文件夹名（N 个文件）；否则=N 个文件
             val title = if (metas.size == 1) metas[0].first.name
-                        else "${metas.size} 个文件"
+                else metas.firstOrNull()?.second?.takeIf { it.contains('/') }
+                    ?.substringBefore('/')?.ifBlank { null }
+                    ?.let { "$it（${metas.size} 个文件）" }
+                ?: "${metas.size} 个文件"
             val sum = metas.sumOf { it.first.size }
-            // 发送进度卡（消息流里，替代顶部状态条）
+            // 发送进度卡（消息流里，替代顶部状态条）——
+            // 从"等待对方接收"起就带 sending=true（右侧），不再先左后右跳
             main.post {
-                progress[sendKey] = RecvProgress(peerId, title, 0, metas.size, 0, sum)
+                progress[sendKey] = RecvProgress(peerId, title, 0, metas.size, 0, sum,
+                    sending = true, waiting = true)
             }
             runCatching {
-                api.sendFiles(p, metas) { i, t, tot ->
+                val ok = api.sendFiles(p, metas) { i, t, tot ->
                     main.post {
-                        progress[sendKey] = RecvProgress(peerId, title, i, metas.size, t, tot)
+                        progress[sendKey] = RecvProgress(peerId, title, i, metas.size,
+                            t, tot, sampleSpeed(sendKey, t), sending = true)
                     }
                 }
                 main.post {
                     progress.remove(sendKey)
-                    // 发送完成的卡片带源文件路径（可点击打开）
-                    val sent = metas.map { m ->
-                        ReceivedFile(m.first.name, m.first.size, null, m.second)
+                    speedSamples.remove(sendKey)
+                    // 等待确认超时（ok=false）静默收场：清进度卡，不出成功卡也不提示
+                    if (ok) {
+                        // 发送完成的卡片带源文件路径
+                        val sent = metas.map { m ->
+                            ReceivedFile(m.first.name, m.first.size, null, m.second)
+                        }
+                        chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }.add(ChatEntry.FileCard(
+                            true, title, sum, System.currentTimeMillis(), null, sent))
                     }
-                    chats.getOrPut(peerId) { mutableListOf() }.add(ChatEntry.FileCard(
-                        true, title, sum, System.currentTimeMillis(), null, sent))
                 }
             }.onFailure {
                 main.post {
                     progress.remove(sendKey)
+                    speedSamples.remove(sendKey)
                     sendStatus = it.message
                 }
+            }
+        }
+    }
+
+    /** 发送文件夹：SAF 树 uri → DocumentFile 递归收集（rel = 文件夹名/子目录/文件） */
+    fun sendFolder(treeUri: Uri) {
+        if (currentPeer == null) return
+        GlobalScope.launch(Dispatchers.IO) {
+            val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(ctx, treeUri)
+            val entries = mutableListOf<Pair<Uri, String>>()
+            fun walk(d: androidx.documentfile.provider.DocumentFile, prefix: String) {
+                d.listFiles().forEach { f ->
+                    val n = f.name ?: return@forEach
+                    if (f.isDirectory) walk(f, if (prefix.isEmpty()) n else "$prefix/$n")
+                    else entries.add(f.uri to (if (prefix.isEmpty()) n else "$prefix/$n"))
+                }
+            }
+            // 树根名字：SAF 的 root.name 在不少 ROM 上是 null → 用文档 id 尾段兜底
+            val rootName = root?.name?.takeIf { it.isNotBlank() }
+                ?: runCatching {
+                    android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                        .substringAfterLast('/')
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: "文件夹"
+            root?.listFiles()?.forEach { f ->
+                val n = f.name ?: return@forEach
+                if (f.isDirectory) walk(f, "$rootName/$n")
+                else entries.add(f.uri to "$rootName/$n")
+            }
+            main.post {
+                if (entries.isEmpty()) MainActivity.toast(ctx, "该文件夹是空的")
+                else sendPickedEntries(entries)
             }
         }
     }
@@ -370,24 +621,154 @@ private val IndigoDark = androidx.compose.ui.graphics.Color(0xFF4F46E5)
 fun App() {
     val ctx = LocalContext.current
     BackInterceptor(ctx)
-    MaterialTheme(colorScheme = darkColorScheme(primary = Indigo)) {
+    // 主题：跟随系统 / 强制亮色 / 强制暗色
+    val isDark = when (App.themeMode) {
+        "light" -> false
+        "dark" -> true
+        else -> androidx.compose.foundation.isSystemInDarkTheme()
+    }
+    val colors = if (isDark) darkColorScheme(primary = Indigo)
+                 else lightColorScheme(primary = IndigoDark)
+    MaterialTheme(colorScheme = colors) {
         val peerId = App.currentPeer
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
-        App.pendingReq?.let { req ->
-            AlertDialog(
+        // 队头请求先弹，处理完（接收/拒绝/存到）自动弹下一个
+        App.pendingReqs.firstOrNull()?.let { req ->
+            // 卡片式接收弹窗：渐变图标 + 摘要胶囊 + 拒绝/接收/存到…
+            androidx.compose.ui.window.Dialog(
                 onDismissRequest = { },
-                title = { Text("${req.peer.name} 想发送文件",
-                    fontWeight = FontWeight.SemiBold) },
-                text = { Text("${req.files.size} 个文件 · " +
-                        fmtSize(req.files.sumOf { it.size }),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                confirmButton = { TextButton(onClick = {
-                    req.decision.complete(true); App.pendingReq = null
-                }) { Text("接收") } },
-                dismissButton = { TextButton(onClick = {
-                    req.decision.complete(false); App.pendingReq = null
-                }) { Text("拒绝") } },
-            )
+                properties = androidx.compose.ui.window.DialogProperties(
+                    dismissOnClickOutside = false)
+            ) {
+                androidx.compose.material3.Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 22.dp)
+                    ) {
+                        Spacer(Modifier.height(22.dp))
+                        // 顶部渐变图标
+                        Box(
+                            modifier = Modifier
+                                .size(58.dp)
+                                .clip(RoundedCornerShape(19.dp))
+                                .background(
+                                    androidx.compose.ui.graphics.Brush.linearGradient(
+                                        listOf(
+                                            MaterialTheme.colorScheme.primary,
+                                            MaterialTheme.colorScheme.primary.copy(alpha = .65f)
+                                        )
+                                    )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Rounded.FileDownload, null,
+                                tint = androidx.compose.ui.graphics.Color.White,
+                                modifier = Modifier.size(30.dp))
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text(req.peer.name,
+                            fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text("想发送文件给你", fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        // 后面还排着队：处理完这张自动弹下一张
+                        if (App.pendingReqs.size > 1) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("（处理完还有 ${App.pendingReqs.size - 1} 个请求）",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        // 文件数 + 大小摘要胶囊
+                        androidx.compose.material3.Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = .09f)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(
+                                    horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Icon(Icons.Rounded.Description, null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(5.dp))
+                                Text("${req.files.size} 个文件 · " +
+                                        fmtSize(req.files.sumOf { it.size }),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        Spacer(Modifier.height(18.dp))
+                        // 拒绝 / 接收
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            androidx.compose.material3.OutlinedButton(
+                                onClick = {
+                                    req.decision.complete(false)
+                                    App.pendingReqs.remove(req)
+                                },
+                                colors = androidx.compose.material3.ButtonDefaults
+                                    .outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.error),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.error.copy(alpha = .35f)),
+                                shape = RoundedCornerShape(13.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Close, null,
+                                    modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("拒绝")
+                            }
+                            androidx.compose.material3.Button(
+                                onClick = {
+                                    // 点接收 → 直接跳进对应会话（看进度）
+                                    App.currentPeer = req.peer.id
+                                    req.decision.complete(true)
+                                    App.pendingReqs.remove(req)
+                                },
+                                shape = RoundedCornerShape(13.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Rounded.Download, null,
+                                    modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("接收")
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        // 存到…：选文件夹（授权）后自动接收，保存到所选目录
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                App.pickingForReceive = true
+                                (ctx as? MainActivity)?.pickDir()
+                            },
+                            shape = RoundedCornerShape(13.dp),
+                            colors = androidx.compose.material3.ButtonDefaults
+                                .textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.DriveFileMove, null,
+                                modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("存到…（选择位置）")
+                        }
+                        Spacer(Modifier.height(10.dp))
+                    }
+                }
+            }
         }
     }
 }
@@ -614,6 +995,89 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                         prefs.edit().putBoolean("auto_receive", on).apply()
                     })
                 }
+                Spacer(Modifier.height(16.dp))
+                // 电池优化：后台持续接收的可靠性的关键（厂商省电会杀后台服务）
+                val pm = remember {
+                    ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                }
+                var battOptimizedOut by remember {
+                    mutableStateOf(pm.isIgnoringBatteryOptimizations(ctx.packageName))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("禁用电池优化", fontSize = 13.sp)
+                        Text(
+                            if (battOptimizedOut) "已加入白名单，后台接收不受省电限制"
+                            else "让后台接收不被系统省电杀掉",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    OutlinedButton(onClick = {
+                        if (battOptimizedOut) {
+                            MainActivity.toast(ctx, "已禁用电池优化")
+                        } else {
+                            // 返回后重查状态（用户可能点了允许）
+                            runCatching {
+                                ctx.startActivity(Intent(
+                                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:${ctx.packageName}")))
+                            }.onFailure {
+                                MainActivity.toast(ctx, "无法打开：${it.message}")
+                            }
+                        }
+                    }) {
+                        Text(if (battOptimizedOut) "已禁用" else "去设置",
+                            fontSize = 12.sp)
+                    }
+                }
+                // 从系统页返回时刷新状态
+                val lifecycleOwner =
+                    androidx.compose.ui.platform.LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val lifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                            battOptimizedOut =
+                                pm.isIgnoringBatteryOptimizations(ctx.packageName)
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(lifecycleObserver) }
+                }
+                Spacer(Modifier.height(12.dp))
+                // 允许后台活动（厂商私有页，跳系统设置开启自启/后台权限）
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("允许后台活动", fontSize = 13.sp)
+                        Text("跳到系统页开启自启动 / 后台运行权限",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    OutlinedButton(onClick = {
+                        if (!MainActivity.jumpAutoStart(ctx))
+                            MainActivity.toast(ctx, "未能打开系统设置页")
+                    }) {
+                        Text("去开启", fontSize = 12.sp)
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                // 外观主题（null=跟随系统；putString(null) 即清除，回落跟随系统）
+                Row(Modifier.fillMaxWidth()) {
+                    listOf(null to "跟随系统", "light" to "浅色", "dark" to "深色")
+                        .forEachIndexed { i, (mode, label) ->
+                            if (i > 0) Spacer(Modifier.width(6.dp))
+                            FilterChip(
+                                selected = App.themeMode == mode,
+                                onClick = {
+                                    App.themeMode = mode
+                                    prefs.edit().putString("theme_mode", mode).apply()
+                                },
+                                label = { Text(label, fontSize = 12.sp) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                }
                 if (!hasAllFiles) {
                     Spacer(Modifier.height(8.dp))
                     Text("⚠ 未授予「所有文件访问」权限，写入公共目录会失败。" +
@@ -629,7 +1093,7 @@ fun SettingsDialog(onDismiss: () -> Unit) {
     )
 }
 
-/** 改名：随机重掷 + 手动输入 */
+/** 改名：手动输入 + 本机设备名 + 随机诗意名 */
 @Composable
 fun RenameDialog(onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(App.me.name) }
@@ -642,6 +1106,18 @@ fun RenameDialog(onDismiss: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true)
                 Spacer(Modifier.height(8.dp))
+                // 使用本机型号
+                if (App.phoneModel.isNotBlank()) {
+                    OutlinedButton(
+                        onClick = { name = App.phoneModel },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.PhoneAndroid, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("使用本机设备名（${App.phoneModel}）", fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
                 OutlinedButton(
                     onClick = { name = randomPoeticName() },
                     modifier = Modifier.fillMaxWidth(),
@@ -806,6 +1282,24 @@ fun MyQrDialog(onDismiss: () -> Unit) {
 
 // ---------------------------------------------------------------- 会话
 
+/** 底部工具栏入口：图标 + 文字标签 */
+@Composable
+fun ToolEntry(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector,
+              onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        Icon(icon, label, modifier = Modifier.size(22.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(3.dp))
+        Text(label, fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(peerId: String) {
@@ -813,8 +1307,10 @@ fun ChatScreen(peerId: String) {
     val activity = ctx as? MainActivity
     val peers by App.peers.collectAsState()
     val peer = peers[peerId]
-    val msgs = remember(peerId) { App.chats.getOrPut(peerId) { mutableListOf() } }
+    val msgs = remember(peerId) { App.chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() } }
     var input by remember { mutableStateOf("") }
+    var inputOpen by remember { mutableStateOf(false) }
+    var showClear by remember { mutableStateOf(false) }
     val progresses = App.progress.values.filter { it.peerId == peerId }
 
     Scaffold(
@@ -861,6 +1357,12 @@ fun ChatScreen(peerId: String) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回")
                     }
                 },
+                actions = {
+                    // 清空当前会话的聊天记录（内存态，不影响已接收文件）
+                    IconButton(onClick = { showClear = true }) {
+                        Icon(Icons.Rounded.DeleteSweep, "清空记录")
+                    }
+                },
             )
         },
     ) { pad ->
@@ -874,16 +1376,62 @@ fun ChatScreen(peerId: String) {
             LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp),
                 reverseLayout = false) {
                 items(msgs.size + progresses.size) { i ->
-                    if (i < msgs.size) MessageBubble(msgs[i])
+                    if (i < msgs.size) MessageBubble(msgs[i],
+                        onDelete = { en ->
+                            // 引用相等删这一条（值相等会误删同内容的重复消息）
+                            val idx = msgs.indexOfFirst { it === en }
+                            if (idx >= 0) msgs.removeAt(idx)
+                        })
                     else ProgressCard(progresses[i - msgs.size])
                 }
             }
-            // 紧凑输入条：小图标按钮 + 胶囊输入框 + 圆形发送
+            if (!inputOpen) {
+                // 默认工具栏：四个入口一字排开；点"文本"展开消息输入
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly) {
+                    ToolEntry("文件", Icons.Rounded.InsertDriveFile) {
+                        activity?.pick()
+                    }
+                    ToolEntry("文件夹", Icons.Rounded.Folder) {
+                        activity?.pickFolder()
+                    }
+                    ToolEntry("剪贴板", Icons.Rounded.ContentPaste) {
+                        val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                        val t = cm.primaryClip?.getItemAt(0)
+                            ?.coerceToText(ctx)?.toString()?.trim()
+                        if (t.isNullOrEmpty()) MainActivity.toast(ctx, "剪贴板没有文本")
+                        else App.sendText(peerId, t)
+                    }
+                    ToolEntry("文本", Icons.Rounded.Chat) { inputOpen = true }
+                }
+            } else {
+            // 展开的输入条：文件/文件夹/剪贴板 + 胶囊输入框 + 发送/收起
             Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { activity?.pick() },
                     modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Rounded.AttachFile, "选择文件",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // 发送文件夹（SAF 选树，递归带目录结构）
+                IconButton(onClick = { activity?.pickFolder() },
+                    modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.Folder, "发送文件夹",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // 发送剪贴板文本
+                IconButton(onClick = {
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                    val t = cm.primaryClip?.getItemAt(0)
+                        ?.coerceToText(ctx)?.toString()?.trim()
+                    if (t.isNullOrEmpty()) MainActivity.toast(ctx, "剪贴板没有文本")
+                    else App.sendText(peerId, t)
+                }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.ContentPaste, "发送剪贴板",
                         modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -907,16 +1455,48 @@ fun ChatScreen(peerId: String) {
                         Icon(Icons.AutoMirrored.Rounded.Send, "发送",
                             modifier = Modifier.size(16.dp))
                     }
+                } else {
+                    // 收起输入回到工具栏
+                    IconButton(onClick = { inputOpen = false },
+                        modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, "收起",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
+            }
             }
         }
     }
+    // 清空聊天记录确认
+    if (showClear) {
+        AlertDialog(
+            onDismissRequest = { showClear = false },
+            title = { Text("清空聊天记录", fontWeight = FontWeight.SemiBold) },
+            text = { Text("清空与「${peer?.info?.name ?: "对方"}」的全部消息记录？" +
+                    "（不影响已接收的文件）") },
+            confirmButton = {
+                TextButton(onClick = {
+                    msgs.clear()
+                    showClear = false
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClear = false }) { Text("取消") }
+            },
+        )
+    }
 }
 
+/** 消息手势：双击=直接复制（文本），长按=弹菜单（文本=复制/删除，文件卡=删除） */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun MessageBubble(e: ChatEntry) {
+fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
     val ctx = LocalContext.current
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
     val end = e.outgoing
+    var menu by remember { mutableStateOf(false) }
+    var lastTap by remember { mutableStateOf(0L) }
     Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
         contentAlignment = if (end) Alignment.CenterEnd else Alignment.CenterStart) {
         Surface(
@@ -927,17 +1507,43 @@ fun MessageBubble(e: ChatEntry) {
             color = if (end) IndigoDark
             else MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            Column(Modifier.padding(12.dp).widthIn(max = 280.dp)) {
+            Column(
+                Modifier.padding(12.dp).widthIn(max = 280.dp)
+                    .combinedClickable(
+                        interactionSource = remember {
+                            androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            val now = System.currentTimeMillis()
+                            if (e is ChatEntry.Text) {
+                                // 双击（350ms 内两次点击）= 直接复制文本
+                                if (now - lastTap < 350) {
+                                    clip.setText(
+                                        androidx.compose.ui.text.AnnotatedString(e.text))
+                                    MainActivity.toast(ctx, "已复制")
+                                }
+                            } else if (e is ChatEntry.FileCard) {
+                                // 点击文件卡 = 默认打开：单文件打开文件，
+                                // 多文件/文件夹打开保存目录
+                                if (e.files.size == 1) {
+                                    MainActivity.openFile(ctx, e.files[0])
+                                } else {
+                                    e.location?.let { loc ->
+                                        if (!MainActivity.openDirectory(ctx, loc))
+                                            MainActivity.toast(ctx, "请到文件管理器查看：$loc")
+                                    }
+                                }
+                            }
+                            lastTap = now
+                        },
+                        onLongClick = { menu = true },
+                    )) {
                 when (e) {
                     is ChatEntry.Text -> Text(e.text,
                         color = if (end) androidx.compose.ui.graphics.Color.White
                         else MaterialTheme.colorScheme.onSurface)
-                    is ChatEntry.FileCard -> Column(
-                        Modifier.clickable {
-                            e.files.firstOrNull()?.let {
-                                MainActivity.openFile(ctx, it)
-                            }
-                        }) {
+                    // 文件卡只展示，不可点击（用户明确要求）
+                    is ChatEntry.FileCard -> Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (e.files.size > 1 || e.files.isEmpty()) "📁" else "📄",
                                 fontSize = 18.sp)
@@ -952,7 +1558,7 @@ fun MessageBubble(e: ChatEntry) {
                                 if (end) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
                                 else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("${fmtSize(e.size)} · 点击打开", fontSize = 11.sp,
+                        Text(fmtSize(e.size), fontSize = 11.sp,
                             color = if (end)
                                 androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f)
                             else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -961,15 +1567,68 @@ fun MessageBubble(e: ChatEntry) {
                 }
             }
         }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            if (e is ChatEntry.Text) {
+                DropdownMenuItem(
+                    text = { Text("复制") },
+                    leadingIcon = {
+                        Icon(Icons.Rounded.ContentCopy, null, Modifier.size(18.dp))
+                    },
+                    onClick = {
+                        clip.setText(
+                            androidx.compose.ui.text.AnnotatedString(e.text))
+                        MainActivity.toast(ctx, "已复制")
+                        menu = false
+                    })
+            }
+            // 文件卡：打开单个文件 / 打开所在目录（接收卡才有保存位置）
+            if (e is ChatEntry.FileCard) {
+                if (e.files.size == 1) {
+                    DropdownMenuItem(
+                        text = { Text("打开文件") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.InsertDriveFile, null, Modifier.size(18.dp))
+                        },
+                        onClick = {
+                            menu = false
+                            MainActivity.openFile(ctx, e.files[0])
+                        })
+                }
+                e.location?.let { loc ->
+                    DropdownMenuItem(
+                        text = { Text("打开目录") },
+                        leadingIcon = {
+                            Icon(Icons.Rounded.Folder, null, Modifier.size(18.dp))
+                        },
+                        onClick = {
+                            menu = false
+                            if (!MainActivity.openDirectory(ctx, loc))
+                                MainActivity.toast(ctx, "请到文件管理器查看：$loc")
+                        })
+                }
+            }
+            DropdownMenuItem(
+                text = { Text("删除") },
+                leadingIcon = {
+                    Icon(Icons.Rounded.Delete, null, Modifier.size(18.dp),
+                        tint = androidx.compose.ui.graphics.Color(0xFFDC2626))
+                },
+                onClick = { menu = false; onDelete(e) })
+        }
     }
 }
 
 @Composable
 fun ProgressCard(p: RecvProgress) {
-    Surface(
-        shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
+    // 发送靠右、接收靠左（与完成后的文件卡同侧，不再"传完跳边"）
+    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        contentAlignment = if (p.sending) Alignment.CenterEnd else Alignment.CenterStart) {
+        Surface(
+            // 尖角朝发送方：右下（发送）/ 左下（接收）
+            shape = if (p.sending) RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
+                    else RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
         Column(Modifier.padding(12.dp).widthIn(max = 280.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("📁", fontSize = 18.sp)
@@ -981,8 +1640,11 @@ fun ProgressCard(p: RecvProgress) {
             }
             Spacer(Modifier.height(6.dp))
             val frac = if (p.total > 0) p.transferred.toFloat() / p.total else 0f
-            Text("接收中 ${(frac * 100).toInt()}% · " +
-                    "${fmtSize(p.transferred)} / ${fmtSize(p.total)}",
+            // 等待确认 → 只显示等待文案；速度 >0 才显示
+            val status = if (p.waiting) "等待对方接收…"
+                else "${if (p.sending) "发送中" else "接收中"} ${(frac * 100).toInt()}%" +
+                    (if (p.speedBps > 0) " · ${fmtSize(p.speedBps.toLong())}/s" else "")
+            Text(status,
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(6.dp))
@@ -993,5 +1655,6 @@ fun ProgressCard(p: RecvProgress) {
                 color = Indigo,
             )
         }
+    }
     }
 }

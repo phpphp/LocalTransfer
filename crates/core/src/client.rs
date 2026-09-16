@@ -22,12 +22,40 @@ pub struct SendReg {
 
 pub type Sendings = Arc<Mutex<HashMap<String, SendReg>>>;
 
+/// 从 base URL（如 http://192.168.8.3:17878）解析对端 IPv4
+fn base_host_ip(base: &str) -> Option<std::net::IpAddr> {
+    let rest = base.split_once("://")?.1;
+    let host = rest.split(':').next()?; // IPv4 直连，无方括号/路径
+    host.parse().ok()
+}
+
+/// 与对端同网段的本地绑定地址（base URL 版）
+fn lan_bind_addr(base: &str) -> Option<std::net::IpAddr> {
+    base_host_ip(base)
+        .and_then(crate::net::local_addr_for)
+        .map(std::net::IpAddr::V4)
+}
+
+/// 局域网直连客户端：不吃系统代理（Clash 等会把 LAN 请求劫持）+
+/// 绑定与对端同网段的本地源 IP（飞连/EasyConnect 等 VPN 推宽路由进隧道时，
+/// 绑源即绑出接口，流量必走物理网卡——"看得到设备却收发不了消息"的对策）
+pub fn lan_client(base: &str) -> reqwest::Client {
+    let local = lan_bind_addr(base);
+    if local.is_some() {
+        tracing::debug!("LAN 客户端绑定源 {local:?} → {base}");
+    }
+    reqwest::Client::builder()
+        .no_proxy()
+        .local_address(local)
+        // 连接阶段就失败（对方离线/IP 变了），别等总超时
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap()
+}
+
 /// 发送一条文本消息（不含入库，入库由调用方在发送前后自行决定）
 pub async fn send_text(base: &str, me: &DeviceInfo, text: &str, sent_at: i64) -> Result<()> {
-    // 局域网直连：绝不吃系统代理（用户开 Clash 等会把 LAN 请求劫持）
-    let client = reqwest::Client::builder()
-        // 局域网直连：绝不吃系统代理
-        .no_proxy().build().unwrap();
+    let client = lan_client(base);
     let resp = client
         .post(format!("{base}/api/message"))
         .json(&MessageBody {
@@ -38,7 +66,16 @@ pub async fn send_text(base: &str, me: &DeviceInfo, text: &str, sent_at: i64) ->
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .context("连接对方失败")?;
+        .map_err(|e| {
+            // 超时单独成案：设备离线/IP 变更后条目还指着旧地址，TCP SYN 无响应
+            if e.is_timeout() {
+                anyhow::anyhow!(
+                    "连接对方超时：对方可能已离线或换了 IP，等它重新上线后自动恢复"
+                )
+            } else {
+                anyhow::Error::new(e).context("连接对方失败")
+            }
+        })?;
     if !resp.status().is_success() {
         bail!("对方返回 {}", resp.status());
     }
@@ -77,8 +114,8 @@ pub async fn send_files(
             });
         }
         Err(e) => {
-            // 区分用户主动取消与真实错误
-            let reason = if cancel.is_cancelled() {
+            // 区分用户主动取消、等待确认超时与真实错误
+            let reason = if cancel.is_cancelled() || e.downcast_ref::<PrepareTimeout>().is_some() {
                 "已取消".to_string()
             } else {
                 e.to_string()
@@ -90,6 +127,18 @@ pub async fn send_files(
         }
     }
 }
+
+/// prepare 等待接收方确认超时的标记错误——上层据此把传输收场为"已取消"（不提示）
+#[derive(Debug)]
+struct PrepareTimeout;
+
+impl std::fmt::Display for PrepareTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("等待确认超时")
+    }
+}
+
+impl std::error::Error for PrepareTimeout {}
 
 async fn send_files_inner(
     base: &str,
@@ -106,6 +155,8 @@ async fn send_files_inner(
         // 局域网直连：绝不吃系统代理
         .no_proxy()
         .timeout(std::time::Duration::from_secs(600)) // 单文件上传上限；空闲时由 body 驱动
+        .local_address(lan_bind_addr(base))
+        .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
 
     // 1) prepare
@@ -135,6 +186,12 @@ async fn send_files_inner(
         .await
         .context("连接对方失败")?;
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        let body = resp.text().await.unwrap_or_default();
+        // 等待确认超时 ≠ 拒绝：接收方 5 分钟没点确认，等同用户取消，
+        // 静默收场不提示（提示文案已按需求去掉）
+        if body.contains("超时") {
+            return Err(PrepareTimeout.into());
+        }
         bail!("对方拒绝了传输");
     }
     if !resp.status().is_success() {
@@ -211,7 +268,10 @@ pub async fn probe_info(base: &str) -> Result<DeviceInfo> {
     // 局域网直连：绝不吃系统代理（用户开 Clash 等会把 LAN 请求劫持）
     let client = reqwest::Client::builder()
         // 局域网直连：绝不吃系统代理
-        .no_proxy().build().unwrap();
+        .no_proxy()
+        .local_address(lan_bind_addr(base))
+        .build()
+        .unwrap();
     let resp = client
         .get(format!("{base}/api/info"))
         .timeout(std::time::Duration::from_secs(3))

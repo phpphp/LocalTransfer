@@ -20,6 +20,13 @@ class MainActivity : FlutterActivity() {
     private val downloadChannel = "localtransfer/downloads"
     private var multicastLock: WifiManager.MulticastLock? = null
 
+    // "存到…"目录选择（ACTION_OPEN_DOCUMENT_TREE）的挂起结果
+    private var pendingPickResult: MethodChannel.Result? = null
+
+    companion object {
+        private const val REQ_PICK_SAVE_DIR = 47001
+    }
+
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
 
@@ -66,12 +73,31 @@ class MainActivity : FlutterActivity() {
                             result.error("NO_PATH", null, null); return@setMethodCallHandler
                         }
                         val rel = call.argument<String>("rel") ?: ""
+                        val treeUriStr = call.argument<String?>("treeUri")
                         val segs = rel.split('/')
                             .filter { it.isNotEmpty() && it != "." && it != ".." && !it.contains(':') }
                         val displayName = segs.lastOrNull() ?: File(src).name
                         val subDir = if (segs.size > 1) segs.dropLast(1).joinToString("/") else ""
                         try {
-                            val realPath: String? = if (Build.VERSION.SDK_INT >= 29) {
+                            // "存到…"选定的 SAF 目录：DocumentsContract 建文件写入，
+                            // 没有真实路径可返回，只回 content URI（打开/分享够用）
+                            val realPath: String? = if (treeUriStr != null) {
+                                val treeRoot = Uri.parse(treeUriStr)
+                                var dir = DocumentsContract.buildDocumentUriUsingTree(
+                                    treeRoot, DocumentsContract.getTreeDocumentId(treeRoot)
+                                )
+                                if (segs.size > 1) {
+                                    for (s in segs.subList(0, segs.size - 1)) {
+                                        dir = findOrCreateChild(treeRoot, dir, s)
+                                    }
+                                }
+                                val mime = mimeForFile(displayName)
+                                val fileUri = findOrCreateChild(treeRoot, dir, displayName, mime)
+                                contentResolver.openOutputStream(fileUri)?.use { out ->
+                                    File(src).inputStream().use { it.copyTo(out) }
+                                } ?: throw IllegalStateException("打开输出流失败")
+                                "null|$fileUri"
+                            } else if (Build.VERSION.SDK_INT >= 29) {
                                 val values = ContentValues().apply {
                                     put(MediaStore.Downloads.DISPLAY_NAME, displayName)
                                     put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
@@ -108,6 +134,27 @@ class MainActivity : FlutterActivity() {
                             result.success(realPath)
                         } catch (e: Exception) {
                             result.error("SAVE_FAILED", e.message, null)
+                        }
+                    }
+                    // "存到…"：系统目录选择器（SAF），返回可持续授权的树 URI
+                    "pickSaveDir" -> {
+                        if (pendingPickResult != null) {
+                            result.error("BUSY", null, null); return@setMethodCallHandler
+                        }
+                        pendingPickResult = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                            )
+                        }
+                        try {
+                            @Suppress("DEPRECATION")
+                            startActivityForResult(intent, REQ_PICK_SAVE_DIR)
+                        } catch (e: Exception) {
+                            pendingPickResult = null
+                            result.error("PICK_FAILED", e.message, null)
                         }
                     }
                     "openUri" -> {
@@ -157,6 +204,85 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQ_PICK_SAVE_DIR) {
+            val res = pendingPickResult
+                ?: return super.onActivityResult(requestCode, resultCode, data)
+            pendingPickResult = null
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) {
+                // 持久化授权：重启后仍可写（本批转存在 minutes 内发生，稳妥起见仍保留）
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (_: SecurityException) {
+                    // 部分提供方不支持持久化授权，本批写入不受影响
+                }
+                res.success(uri.toString())
+            } else {
+                res.success(null)
+            }
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    /// 在 SAF 目录下找同名子项（文件/目录），没有则按 [mime] 新建
+    private fun findOrCreateChild(
+        treeRoot: Uri,
+        dirDoc: Uri,
+        name: String,
+        mime: String = "vnd.android.document/directory"
+    ): Uri {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeRoot, DocumentsContract.getDocumentId(dirDoc)
+        )
+        contentResolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME
+            ),
+            null, null, null
+        )?.use { c ->
+            while (c.moveToNext()) {
+                if (c.getString(1) == name) {
+                    return DocumentsContract.buildDocumentUriUsingTree(treeRoot, c.getString(0))
+                }
+            }
+        }
+        return DocumentsContract.createDocument(contentResolver, dirDoc, mime, name)
+            ?: throw IllegalStateException("createDocument 失败: $name")
+    }
+
+    /// 按扩展名给 DocumentsContract 建文件用的 MIME（SAF 场景尽量准确，
+    /// 部分文档提供方按 MIME 决定文件归类）
+    private fun mimeForFile(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return when (ext) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "heic", "heif" -> "image/heic"
+            "mp4" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "mov" -> "video/quicktime"
+            "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "pdf" -> "application/pdf"
+            "txt", "md", "log" -> "text/plain"
+            "apk" -> "application/vnd.android.package-archive"
+            else -> "application/octet-stream"
+        }
     }
 
     override fun onDestroy() {

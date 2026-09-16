@@ -311,32 +311,163 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  /// 收到传输请求：卡片式弹窗（图标 + 摘要 + 拒绝/接收/存到…）
   void _showIncoming(IncomingReq req) {
     final total = req.files.fold<int>(0, (s, f) => s + f.size);
     showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: Text('${req.peer.name} 想发送文件'),
-        content: Text('${req.files.length} 个文件 · ${fmtSize(total)}'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              req.decision.complete(false);
-              Navigator.pop(ctx);
-            },
-            child: const Text('拒绝'),
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 30, vertical: 24),
+          child: Container(
+            decoration: BoxDecoration(
+              color: cs.surface,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .16),
+                  blurRadius: 32,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            padding: const EdgeInsets.fromLTRB(20, 22, 20, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 顶部渐变图标
+                Container(
+                  width: 58,
+                  height: 58,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [cs.primary, cs.primary.withValues(alpha: .65)],
+                    ),
+                    borderRadius: BorderRadius.circular(19),
+                  ),
+                  child: const Icon(Icons.file_download_rounded,
+                      color: Colors.white, size: 30),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  req.peer.name,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: cs.onSurface,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '想发送文件给你',
+                  style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                ),
+                const SizedBox(height: 14),
+                // 文件数 + 大小摘要胶囊
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: cs.primary.withValues(alpha: .09),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.description_outlined,
+                          size: 14, color: cs.primary),
+                      const SizedBox(width: 5),
+                      Text(
+                        '${req.files.length} 个文件 · ${fmtSize(total)}',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: cs.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+                // 拒绝 / 接收
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: cs.error,
+                          side: BorderSide(
+                              color: cs.error.withValues(alpha: .35)),
+                          padding: const EdgeInsets.symmetric(vertical: 11),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(13)),
+                        ),
+                        onPressed: () {
+                          req.decision
+                              .complete(IncomingDecision(false, null));
+                          Navigator.pop(ctx);
+                        },
+                        icon: const Icon(Icons.close_rounded, size: 17),
+                        label: const Text('拒绝'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 11),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(13)),
+                        ),
+                        onPressed: () {
+                          req.decision
+                              .complete(IncomingDecision(true, null));
+                          Navigator.pop(ctx);
+                        },
+                        icon: const Icon(Icons.download_rounded, size: 17),
+                        label: const Text('接收'),
+                      ),
+                    ),
+                  ],
+                ),
+                // 存到…：SAF 选目录，本批存到所选位置
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton.icon(
+                    style: TextButton.styleFrom(
+                      foregroundColor: cs.primary,
+                      padding: const EdgeInsets.symmetric(vertical: 9),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(13)),
+                    ),
+                    onPressed: () async {
+                      final treeUri = await const MethodChannel(
+                              'localtransfer/downloads')
+                          .invokeMethod<String?>('pickSaveDir');
+                      if (!ctx.mounted) return;
+                      if (treeUri != null) {
+                        req.decision
+                            .complete(IncomingDecision(true, treeUri));
+                        Navigator.pop(ctx);
+                      }
+                      // null = 用户取消选择：弹窗保留，可再选/改点接收
+                    },
+                    icon: const Icon(Icons.drive_file_move_rounded, size: 18),
+                    label: const Text('存到…（选择位置）'),
+                  ),
+                ),
+              ],
+            ),
           ),
-          FilledButton(
-            onPressed: () {
-              req.decision.complete(true);
-              Navigator.pop(ctx);
-              setState(() {});
-            },
-            child: const Text('接收'),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -654,8 +785,12 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  /// 扩展名 → MIME：决定系统用哪个应用打开——
+  /// apk → 包安装器；图片/视频 → 图库（默认应用）；其余格式给准确 MIME 走默认应用
   static String _mimeOf(String? ext) {
     switch (ext) {
+      case 'apk':
+        return 'application/vnd.android.package-archive';
       case 'jpg':
       case 'jpeg':
         return 'image/jpeg';
@@ -665,16 +800,45 @@ class _ChatPageState extends State<ChatPage> {
         return 'image/gif';
       case 'webp':
         return 'image/webp';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+      case 'heif':
+        return 'image/heic';
       case 'mp4':
         return 'video/mp4';
+      case 'webm':
+        return 'video/webm';
+      case 'mkv':
+        return 'video/x-matroska';
+      case 'mov':
+        return 'video/quicktime';
+      case '3gp':
+        return 'video/3gpp';
       case 'mp3':
         return 'audio/mpeg';
+      case 'wav':
+        return 'audio/wav';
+      case 'flac':
+        return 'audio/flac';
       case 'pdf':
         return 'application/pdf';
       case 'txt':
       case 'md':
       case 'log':
         return 'text/plain';
+      case 'doc':
+        return 'application/msword';
+      case 'docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'xls':
+        return 'application/vnd.ms-excel';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'ppt':
+        return 'application/vnd.ms-powerpoint';
+      case 'pptx':
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
       default:
         return 'application/octet-stream';
     }

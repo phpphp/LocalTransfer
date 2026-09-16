@@ -199,20 +199,8 @@ fn bind_discovery_socket() -> Result<std::net::UdpSocket> {
 }
 
 fn local_ipv4_interfaces() -> Vec<Ipv4Addr> {
-    match if_addrs::get_if_addrs() {
-        Ok(list) => list
-            .into_iter()
-            .filter(|i| !i.is_loopback())
-            .filter_map(|i| match i.ip() {
-                IpAddr::V4(v4) => Some(v4),
-                _ => None,
-            })
-            .collect(),
-        Err(e) => {
-            tracing::warn!("枚举网卡失败: {e}");
-            Vec::new()
-        }
-    }
+    // VPN/虚拟网卡过滤（飞连/EasyConnect 等会把多播与单播回包吸进隧道）
+    crate::net::lan_ipv4_interfaces()
 }
 
 async fn recv_loop(
@@ -225,6 +213,8 @@ async fn recv_loop(
     let mut buf = vec![0u8; 2048];
     // 每对设备的单播回复节流（id → 上次回复时间 ms），防互回风暴
     let last_replies: Mutex<HashMap<String, i64>> = Mutex::new(HashMap::new());
+    // 按本地源 IP 缓存的回复 socket（绑源即绑出接口，绕开 VPN 路由劫持）
+    let mut reply_sockets: HashMap<Ipv4Addr, tokio::net::UdpSocket> = HashMap::new();
     loop {
         let (n, src) = tokio::select! {
             r = socket.recv_from(&mut buf) => match r {
@@ -283,9 +273,32 @@ async fn recv_loop(
                     let reply =
                         serde_json::to_vec(&DiscoveryPacket::Announce { info: me.clone() })
                             .unwrap_or_default();
-                    let _ = socket
-                        .send_to(&reply, SocketAddrV4::new(src_v4, DISCOVERY_PORT))
-                        .await;
+                    let dst = SocketAddrV4::new(src_v4, DISCOVERY_PORT);
+                    // 单播回复绑定与对端同网段的本地源 IP：VPN 推了宽路由时，
+                    // 默认路由会把回包吸进隧道，对端永远收不到（表现为单向发现）
+                    let sent = match crate::net::local_addr_for(IpAddr::V4(src_v4)) {
+                        Some(local) => {
+                            if let Some(s) = reply_sockets.get(&local) {
+                                s.send_to(&reply, dst).await.is_ok()
+                            } else {
+                                match tokio::net::UdpSocket::bind(SocketAddrV4::new(local, 0))
+                                    .await
+                                {
+                                    Ok(s) => {
+                                        let ok = s.send_to(&reply, dst).await.is_ok();
+                                        reply_sockets.insert(local, s);
+                                        ok
+                                    }
+                                    Err(_) => false,
+                                }
+                            }
+                        }
+                        None => false,
+                    };
+                    if !sent {
+                        // 找不到同网段口或绑定失败：退回主 socket（默认路由）
+                        let _ = socket.send_to(&reply, dst).await;
+                    }
                 }
             }
             DiscoveryPacket::Bye { id } => {

@@ -44,4 +44,7 @@
     </queries>
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- 打开接收的 .apk 时拉起系统包安装器（Android 8+ 需此权限，
+         未授权时系统会引导用户在设置里允许"安装未知应用"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>

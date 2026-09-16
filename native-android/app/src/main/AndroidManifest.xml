@@ -11,6 +11,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 电池优化白名单申请弹窗（设置里"禁用电池优化"用） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 打开接收的 .apk 时拉起系统包安装器（Android 8+ 需此权限，
+         未授权时系统会引导用户允许"安装未知应用"） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="LocalTransfer"
@@ -39,16 +44,18 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- 竖屏卡片式扫码页 -->
+        <activity
+            android:name=".PortraitCaptureActivity"
+            android:screenOrientation="portrait"
+            android:exported="false" />
+
         <!-- 后台接收前台服务 -->
+
         <service
             android:name=".TransferService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 横屏扫码（自定义 CaptureActivity 子类） -->
-        <activity
-            android:name=".LandscapeCaptureActivity"
-            android:screenOrientation="sensorLandscape"
-            android:exported="false" />
     </application>
 </manifest>

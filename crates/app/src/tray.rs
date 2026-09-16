@@ -27,6 +27,18 @@ fn icon_path(name: &str) -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
+/// 载入托盘图标：自己解码 PNG 成 RGBA 交给 tray-icon。
+/// 不能用 Icon::from_path——它在 Windows 走 Win32 LoadImageW(IMAGE_ICON)，
+/// 只认 .ico，喂 .png 直接返回空句柄（日志里"托盘图标缺失"就是这么来的）。
+#[cfg(target_os = "windows")]
+fn load_icon(name: &str) -> Option<tray_icon::Icon> {
+    let path = icon_path(name)?;
+    let img = image::ImageReader::open(&path).ok()?.decode().ok()?;
+    let (w, h) = (img.width(), img.height());
+    let rgba = img.into_rgba8().into_raw();
+    tray_icon::Icon::from_rgba(rgba, w, h).ok()
+}
+
 /// 启动托盘线程（常驻；图标缺失时静默降级为无托盘）
 pub fn start() {
     #[cfg(target_os = "windows")]
@@ -37,15 +49,13 @@ pub fn start() {
 
 #[cfg(target_os = "windows")]
 fn run_tray() {
-    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-    use tray_icon::{TrayIconBuilder, TrayIconEvent};
+    use tray_icon::menu::{Menu, MenuItem};
+    use tray_icon::TrayIconBuilder;
 
-    let normal = icon_path("icon-normal.png")
-        .and_then(|p| tray_icon::Icon::from_path(p, None).ok());
-    let badge = icon_path("icon-badge.png")
-        .and_then(|p| tray_icon::Icon::from_path(p, None).ok());
+    let normal = load_icon("icon-normal.png");
+    let badge = load_icon("icon-badge.png");
     let Some(normal) = normal else {
-        tracing::warn!("托盘图标缺失（icon-normal.png），托盘不可用");
+        tracing::warn!("托盘图标加载失败（icon-normal.png 解码失败或缺失），托盘不可用");
         return;
     };
 
@@ -70,13 +80,15 @@ fn run_tray() {
     };
 
     // Windows 要求：托盘所在线程必须跑 win32 消息循环（否则图标不显示）。
-    // 闪烁与事件轮询挂在 WM_TIMER 上（无窗口 timer 投递到线程队列）。
+    // 闪烁挂在 WM_TIMER 上（无窗口 timer 投递到线程队列）；
+    // 托盘/菜单事件在每条消息处理完立刻取——不能等 700ms 的 tick，
+    // 否则点菜单后事件要等下一个 tick 才生效，表现成"没反应/要点两下"。
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, SetTimer, TranslateMessage, MSG, WM_TIMER,
     };
     const TIMER_ID: usize = 1;
-    unsafe {
-        SetTimer(std::ptr::null_mut(), TIMER_ID, 700, None);
+    if unsafe { SetTimer(std::ptr::null_mut(), TIMER_ID, 700, None) } == 0 {
+        tracing::warn!("SetTimer 失败，托盘闪烁与事件将不可用");
     }
 
     let mut blink_on = false;
@@ -90,6 +102,7 @@ fn run_tray() {
         pt: windows_sys::Win32::Foundation::POINT { x: 0, y: 0 },
     };
     'pump: loop {
+        handle_events(&open_id, &quit_id);
         let r = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
         if r <= 0 {
             break 'pump; // WM_QUIT / 错误
@@ -117,26 +130,42 @@ fn run_tray() {
                 };
                 let _ = tray.set_tooltip(Some(tip));
             }
-            // 托盘/菜单事件
-            if let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-                match ev {
-                    TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. } => {
-                        show_main_window()
-                    }
-                    _ => {}
-                }
-            }
-            if let Ok(ev) = MenuEvent::receiver().try_recv() {
-                if ev.id == quit_id {
-                    std::process::exit(0);
-                } else if ev.id == open_id {
-                    show_main_window();
-                }
-            }
         }
         unsafe {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+        // Dispatch 期间 muda 的 wndproc（菜单模态循环）会把事件塞进 channel，这里立刻取走
+        handle_events(&open_id, &quit_id);
+    }
+}
+
+/// 托盘图标 + 菜单事件处理（每条消息处理完立刻调用）
+#[cfg(target_os = "windows")]
+fn handle_events(open_id: &tray_icon::menu::MenuId, quit_id: &tray_icon::menu::MenuId) {
+    use tray_icon::menu::MenuEvent;
+    use tray_icon::{MouseButton, TrayIconEvent};
+    while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+        match ev {
+            // 只认左键——右键是打开菜单，不能跟着弹主窗口
+            // （之前任何按键都弹窗：右键开菜单后主窗口又抢出来，菜单被打断，
+            //  表现成"打开要点两下、退出点不动"）
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                ..
+            }
+            | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => show_main_window(),
+            _ => {}
+        }
+    }
+    while let Ok(ev) = MenuEvent::receiver().try_recv() {
+        if ev.id == quit_id {
+            std::process::exit(0);
+        } else if ev.id == open_id {
+            show_main_window();
         }
     }
 }
