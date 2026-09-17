@@ -74,8 +74,7 @@ final class Discovery: ObservableObject {
     }
 
     private func receiveLoop(on c: NWConnectionGroup) {
-        c.receiveMessage { [weak self] message, data, _ in
-            defer { self?.receiveLoop(on: c) }
+        c.setReceiveHandler(maximumMessageSize: 65536) { [weak self] message, data, _ in
             guard let d = data else { return }
             self?.handle(d, replyVia: message)
         }

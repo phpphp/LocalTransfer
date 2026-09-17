@@ -33,5 +33,5 @@ jobs:
           sed -n '1400,1460p' "$IFACE"
           echo "==== requiredMulticastGroups ===="
           grep -n "requiredMulticastGroups" "$IFACE" || echo "(不存在)"
-          echo "==== NWListener 构造器 ===="
-          grep -n "public convenience init\|public init" "$IFACE" | head -30
+          echo "==== NWConnectionGroup 全部方法（1405-1580 行）===="
+          sed -n '1460,1580p' "$IFACE" | grep -n "func \|init" | head -30
