@@ -18,7 +18,7 @@ final class Discovery: ObservableObject {
     @Published var peers: [String: Peer] = [:]
 
     private var me: DeviceInfo   // var：改名后下一条 announce 携带新名
-    private var groupConn: NWConnection?
+    private var groupConn: NWConnectionGroup?
     private let queue = DispatchQueue(label: "lt.discovery")
     private var lastReply: [String: Date] = [:]
     private var heartbeat: Timer?
@@ -60,14 +60,12 @@ final class Discovery: ObservableObject {
     }
 
     private func startMulticast() {
-        guard let group = multicastGroup(),
-              let port = NWEndpoint.Port(rawValue: discoveryPort) else { return }
+        // iOS 加入多播组：NWConnectionGroup(with: 组描述符, using: 参数)
+        // （requiredMulticastGroups 是 macOS-only，iOS SDK 无此成员）
+        guard let group = multicastGroup() else { return }
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
-        // 加入组：NWParameters.requiredMulticastGroups（挂参数上，非 UDP Options）
-        params.requiredMulticastGroups = [group]
-        let c = NWConnection(to: .hostPort(host: NWEndpoint.Host(discoveryGroup), port: port),
-                              using: params)
+        let c = NWConnectionGroup(with: group, using: params)
         groupConn = c
         c.stateUpdateHandler = { [weak self] state in
             if case .ready = state { self?.receiveLoop(on: c) }
@@ -75,15 +73,15 @@ final class Discovery: ObservableObject {
         c.start(queue: queue)
     }
 
-    private func receiveLoop(on c: NWConnection) {
-        c.receiveMessage { [weak self] data, _, _, error in
+    private func receiveLoop(on c: NWConnectionGroup) {
+        c.receiveMessage { [weak self] message, data, _ in
             defer { self?.receiveLoop(on: c) }
-            guard let d = data, error == nil else { return }
-            self?.handle(d, from: c)
+            guard let d = data else { return }
+            self?.handle(d, replyVia: message)
         }
     }
 
-    private func handle(_ data: Data, from c: NWConnection) {
+    private func handle(_ data: Data, replyVia message: NWConnectionGroup.Message) {
         guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let t = j["t"] as? String else { return }
         switch t {
@@ -101,8 +99,7 @@ final class Discovery: ObservableObject {
             let now = Date()
             if now.timeIntervalSince(lastReply[info.id] ?? .distantPast) >= 2 {
                 lastReply[info.id] = now
-                c.send(content: me.announceJSON(),
-                       completion: .contentProcessed { _ in })
+                message.reply(content: me.announceJSON())
             }
             _ = isNewOrChanged
         case "bye":
