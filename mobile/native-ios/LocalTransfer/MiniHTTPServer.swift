@@ -65,7 +65,7 @@ final class MiniHTTPServer {
     var port: UInt16 { listener?.port?.rawValue ?? 0 }
 
     init() {
-        me = DeviceInfo(id: "", name: "", plat: "ios", port: 0)
+        me = DeviceInfo(id: "", name: "", plat: "ios", port: 0, v: protocolVersion)
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         saveDir = base.appendingPathComponent("Inbox", isDirectory: true)
         try? FileManager.default.createDirectory(at: saveDir, withIntermediateDirectories: true)
@@ -172,11 +172,11 @@ final class MiniHTTPServer {
                 guard consumed < length else { done(total); return }
                 conn.receive(minimumIncompleteLength: 1,
                              maximumLength: 256 * 1024) { [weak self] data, _, _, err in
-                    guard let d = data, err == nil, !d.isEmpty else {
+                    guard let d = data, err == nil, !d.isEmpty, let self = self else {
                         done(total); return
                     }
-                    self?.buffer = d
-                    chunk(d); total += Int64(d.count); consumed += d.count
+                    self.buffer = d
+                    chunk(d); total += Int64(d.count); self.consumed += d.count
                     pull(&total)
                 }
             }
@@ -295,7 +295,7 @@ final class MiniHTTPServer {
                 self.onProgress?(token, ProgressInfo(
                     peerId: sess.peerId, label: label,
                     fileIdx: sess.completed, fileCount: sess.files.count,
-                    transferred: (try? handle?.offset() ?? 0).map { Int64($0) } ?? 0,
+                    transferred: Int64(handle?.offset() ?? 0),
                     total: total))
             }
         } done: { _ in
