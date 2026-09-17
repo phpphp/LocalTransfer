@@ -56,7 +56,8 @@ jobs:
         include:
           - os: macos-14       # Apple Silicon
             target: aarch64-apple-darwin
-          - os: macos-13       # Intel
+          # Intel：macos-13 runner 已退役（任务永远排队），改在 ARM runner 交叉编译 x86_64
+          - os: macos-15
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
