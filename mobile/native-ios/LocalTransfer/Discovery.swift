@@ -60,10 +60,14 @@ final class Discovery: ObservableObject {
     }
 
     private func startMulticast() {
-        guard let group = multicastGroup() else { return }
+        guard let group = multicastGroup(),
+              let port = NWEndpoint.Port(rawValue: discoveryPort) else { return }
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
-        let c = NWConnection(group: group, using: params)
+        // 加入组：NWParameters.requiredMulticastGroups（挂参数上，非 UDP Options）
+        params.requiredMulticastGroups = [group]
+        let c = NWConnection(to: .hostPort(host: NWEndpoint.Host(discoveryGroup), port: port),
+                              using: params)
         groupConn = c
         c.stateUpdateHandler = { [weak self] state in
             if case .ready = state { self?.receiveLoop(on: c) }
@@ -113,7 +117,7 @@ final class Discovery: ObservableObject {
         guard let port = NWEndpoint.Port(rawValue: discoveryPort) else { return }
         let payload = me.announceJSON()
         // 发送：普通 host 端点直接向多播地址发 UDP（iOS 无需特殊 API）
-        let c = NWConnection(to: .host(host: NWEndpoint.Host(discoveryGroup), port: port),
+        let c = NWConnection(to: .hostPort(host: NWEndpoint.Host(discoveryGroup), port: port),
                              using: .udp)
         c.stateUpdateHandler = { state in
             if case .ready = state {
@@ -199,7 +203,7 @@ final class Discovery: ObservableObject {
         let bye = try! JSONSerialization.data(withJSONObject: ["t": "bye", "id": me.id])
         // 借 announce 通道发 bye（host 端点直发多播地址）
         if let port = NWEndpoint.Port(rawValue: discoveryPort) {
-            let c = NWConnection(to: .host(host: NWEndpoint.Host(discoveryGroup), port: port),
+            let c = NWConnection(to: .hostPort(host: NWEndpoint.Host(discoveryGroup), port: port),
                                  using: .udp)
             c.stateUpdateHandler = { state in
                 if case .ready = state {
