@@ -746,7 +746,8 @@ struct ChatView: View {
     @ViewBuilder private var statusLine: some View {
         if let s = model.sendStatus {
             Text(s).font(.caption).frame(maxWidth: .infinity)
-                .padding(.vertical, 4).background(.fill.opacity(0.5))
+                .padding(.vertical, 4)
+                .background(Color(.secondarySystemBackground).opacity(0.5))
         }
     }
 
@@ -765,7 +766,7 @@ struct ChatView: View {
     }
 
     private func chatRow(_ e: ChatEntry) -> some View {
-        Bubble(entry: e, speed: model.speeds[tokenFor(e)])
+        Bubble(entry: e, speed: tokenFor(e).flatMap { model.speeds[$0] })
             .contextMenu { rowMenu(e) }
     }
 
