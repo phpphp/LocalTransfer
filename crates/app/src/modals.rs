@@ -407,34 +407,45 @@ impl RootView {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(div().text_xs().opacity(0.7).child("设备名（留空跟随系统设备名）"))
+                            .child(div().text_xs().opacity(0.7).child("设备名"))
+                            .child(Input::new(&self.set_name))
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .child(Input::new(&self.set_name).flex_1())
+                                    .pt_1()
                                     .child(
-                                        Button::new("set-name-device")
-                                            .label("使用设备名")
-                                            .outline()
-                                            .small()
-                                            .on_click(cx.listener(|this, _ev, window, cx| {
-                                                // 清空自选名 → 跟随系统设备名
-                                                this.set_name.update(cx, |s, cx| {
-                                                    s.set_value("", window, cx)
-                                                });
-                                            })),
+                                        div().flex_1().min_w_0().child(
+                                            Button::new("set-name-device")
+                                                .label("使用本机设备名")
+                                                .icon(IconName::HardDrive)
+                                                .outline()
+                                                .small()
+                                                .w_full()
+                                                .on_click(cx.listener(|this, _ev, window, cx| {
+                                                    // 直接把系统设备名填进输入框
+                                                    let n =
+                                                        transfer_core::system_device_name();
+                                                    this.set_name.update(cx, |s, cx| {
+                                                        s.set_value(&n, window, cx)
+                                                    });
+                                                })),
+                                        ),
                                     )
                                     .child(
-                                        Button::new("set-name-random")
-                                            .label("随机")
-                                            .outline()
-                                            .small()
-                                            .on_click(cx.listener(|this, _ev, window, cx| {
-                                                let n = transfer_core::random_poetic_name();
-                                                this.set_name.update(cx, |s, cx| {
-                                                    s.set_value(&n, window, cx)
-                                                });
-                                            })),
+                                        div().flex_1().min_w_0().child(
+                                            Button::new("set-name-random")
+                                                .label("来个有诗意的名字")
+                                                .icon(IconName::Star)
+                                                .outline()
+                                                .small()
+                                                .w_full()
+                                                .on_click(cx.listener(|this, _ev, window, cx| {
+                                                    let n = transfer_core::random_poetic_name();
+                                                    this.set_name.update(cx, |s, cx| {
+                                                        s.set_value(&n, window, cx)
+                                                    });
+                                                })),
+                                        ),
                                     ),
                             ),
                     )

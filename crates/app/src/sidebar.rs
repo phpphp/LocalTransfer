@@ -8,13 +8,12 @@
 //!   不要靠 flex 收缩去决定文本宽度（会按 min-content 换行，中文变成一字一行）。
 //! - 列表行给确定高度，避免任何撑高。
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::root::{RootView, initial_avatar};
-use transfer_core::UiCommand;
 
 /// 侧栏宽度
 pub const SIDEBAR_W: f32 = 244.;
@@ -120,6 +119,12 @@ impl RootView {
         online.sort_by(|a, b| a.1.cmp(&b.1));
 
         let me_name = self.me.effective_name();
+        // HTTP Server 会话的未读数（入口在顶部本机卡片）
+        let web_unread = self
+            .unread
+            .get(transfer_core::proto::WEB_PEER_ID)
+            .copied()
+            .unwrap_or(0);
         // 本机地址：优先真实局域网 IP，取不到时退回环回提示
         let me_addr = match (&self.local_ip, self.me.http_port) {
             (Some(ip), port) => format!("{ip}:{port}"),
@@ -136,7 +141,7 @@ impl RootView {
             .bg(cx.theme().sidebar)
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
-            // 本机卡片：点击显示二维码（手机扫码添加本机 / 打开网页客户端）
+            // 本机卡片：名称 + 地址；右侧是 HTTP Server（网页客户端）入口
             .child(
                 h_flex()
                     .id("me-card")
@@ -146,12 +151,6 @@ impl RootView {
                     .px_3()
                     .gap_2p5()
                     .items_center()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(cx.theme().list_hover))
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.show_web_qr = !this.show_web_qr;
-                        cx.notify();
-                    }))
                     .border_b_1()
                     .border_color(cx.theme().sidebar_border)
                     .child(initial_avatar(&me_name, 36., cx))
@@ -194,23 +193,49 @@ impl RootView {
                                     ),
                             ),
                     )
-                    // 一键换随机名
+                    // HTTP Server（网页客户端）会话入口：未读时带角标
                     .child(
-                        Button::new("btn-reroll-name")
-                            .ghost()
-                            .xsmall()
+                        h_flex()
+                            .id("btn-http-server")
                             .flex_none()
-                            .icon(IconName::RotateCw)
-                            .tooltip("换个随机名字")
+                            .gap_1()
+                            .px_2()
+                            .h(px(32.))
+                            .items_center()
+                            .rounded_lg()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().list_hover))
                             .on_click(cx.listener(|this, _ev, _window, cx| {
-                                let name = transfer_core::random_poetic_name();
-                                this.me.device_name = name.clone();
-                                if let Err(e) = this.me.save() {
-                                    this.toast(format!("保存失败: {e}"), true);
-                                }
-                                let _ = this.core.send(UiCommand::Rename { name });
+                                this.select_peer(transfer_core::proto::WEB_PEER_ID, cx);
                                 cx.notify();
-                            })),
+                            }))
+                            .child(
+                                Icon::new(IconName::Globe)
+                                    .with_size(px(16.))
+                                    .text_color(cx.theme().primary),
+                            )
+                            .when(web_unread > 0, |el| {
+                                el.child(
+                                    h_flex()
+                                        .flex_none()
+                                        .h(px(16.))
+                                        .min_w(px(16.))
+                                        .px_1()
+                                        .justify_center()
+                                        .rounded_full()
+                                        .bg(cx.theme().danger)
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().danger_foreground)
+                                                .child(if web_unread > 99 {
+                                                    "99+".to_string()
+                                                } else {
+                                                    web_unread.to_string()
+                                                }),
+                                        ),
+                                )
+                            }),
                     ),
             )
             // 设备列表（滚动区）
@@ -224,8 +249,53 @@ impl RootView {
                     .px_2()
                     .py_1()
                     .gap_0p5()
-                    // 固定的"网页"会话：浏览器客户端
-                    .child(self.web_row(cx))
+                    // 顶部功能行：添加设备 + 本机二维码 + 设置
+                    .child(
+                        h_flex()
+                            .id("sidebar-tools")
+                            .flex_none()
+                            .w_full()
+                            .gap_2()
+                            .pb_1()
+                            .child(
+                                div().flex_1().min_w_0().child(
+                                    Button::new("btn-add-peer")
+                                        .outline()
+                                        .small()
+                                        .w_full()
+                                        .icon(IconName::Plus)
+                                        .label("添加设备")
+                                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                                            this.show_connect = true;
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                            .child(
+                                Button::new("btn-qr")
+                                    .outline()
+                                    .small()
+                                    .flex_none()
+                                    .icon(IconName::LayoutDashboard)
+                                    .tooltip("本机二维码（手机扫码添加 / 网页客户端）")
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        this.show_web_qr = true;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("btn-settings")
+                                    .outline()
+                                    .small()
+                                    .flex_none()
+                                    .icon(IconName::Settings)
+                                    .tooltip("设置")
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        this.show_settings = !this.show_settings;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
                     .when(!online.is_empty(), |el| {
                         el.child(self.group_label("在线", online.len(), cx))
                             .children(
@@ -238,130 +308,8 @@ impl RootView {
                     })
                     .when(empty, |el| el.child(self.sidebar_empty(cx))),
             )
-            // 底部：添加设备 + 设置
-            // 设置必须放这里——放进 TitleBar 的话，整条标题栏是
-            // WindowControlArea::Drag，Windows 的 NCHITTEST 会把点击当成拖窗口，
-            // 按钮永远收不到 click。
-            .child(
-                h_flex()
-                    .flex_none()
-                    .w_full()
-                    .p_2()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Button::new("btn-add-peer")
-                                .outline()
-                                .small()
-                                .w_full()
-                                .icon(IconName::Plus)
-                                .label("添加设备")
-                                .on_click(cx.listener(|this, _ev, _window, cx| {
-                                    this.show_connect = true;
-                                    cx.notify();
-                                })),
-                        ),
-                    )
-                    // 本机二维码（图标用网格占位语义；点击本机卡片同效）
-                    .child(
-                        Button::new("btn-qr")
-                            .outline()
-                            .small()
-                            .flex_none()
-                            .icon(IconName::LayoutDashboard)
-                            .tooltip("本机二维码（手机扫码添加 / 网页客户端）")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.show_web_qr = true;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("btn-settings")
-                            .outline()
-                            .small()
-                            .flex_none()
-                            .icon(IconName::Settings)
-                            .tooltip("设置")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.show_settings = !this.show_settings;
-                                cx.notify();
-                            })),
-                    ),
-            )
     }
 
-    /// 固定的"网页"会话行（浏览器客户端入口）
-    fn web_row(&self, cx: &Context<Self>) -> AnyElement {
-        let selected = self.selected.as_deref() == Some(transfer_core::proto::WEB_PEER_ID);
-        let unread = self
-            .unread
-            .get(transfer_core::proto::WEB_PEER_ID)
-            .copied()
-            .unwrap_or(0);
-        let hover_bg = cx.theme().list_hover;
-
-        h_flex()
-            .id("dev-__web__")
-            .flex_none()
-            .w_full()
-            .h(px(ROW_H))
-            .px_2()
-            .gap_2p5()
-            .rounded_lg()
-            .overflow_hidden()
-            .cursor_pointer()
-            .when(selected, |el| {
-                el.bg(cx.theme().sidebar_accent)
-                    .text_color(cx.theme().sidebar_accent_foreground)
-            })
-            .when(!selected, |el| el.hover(move |s| s.bg(hover_bg)))
-            .on_click(cx.listener(|this, _ev, _window, cx| {
-                this.select_peer(transfer_core::proto::WEB_PEER_ID, cx);
-                cx.notify();
-            }))
-            .child(
-                Icon::new(IconName::Globe)
-                    .with_size(px(16.))
-                    .flex_none()
-                    .text_color(cx.theme().primary),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .w_full()
-                    .truncate()
-                    .text_sm()
-                    .child("HTTP Server"),
-            )
-            .when(unread > 0, |el| {
-                el.child(
-                    h_flex()
-                        .flex_none()
-                        .h(px(18.))
-                        .min_w(px(18.))
-                        .px_1()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(cx.theme().danger)
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger_foreground)
-                                .child(if unread > 99 {
-                                    "99+".to_string()
-                                } else {
-                                    unread.to_string()
-                                }),
-                        ),
-                )
-            })
-            .into_any_element()
-    }
-
-    /// 分组标题："在线 · 2"
     fn group_label(&self, label: &str, count: usize, cx: &Context<Self>) -> AnyElement {
         h_flex()
             .id(SharedString::from(format!("group-{label}")))
