@@ -26,12 +26,12 @@ jobs:
         if: always()
         run: |
           SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-          MODDIR=$(ls -d "$SDK/System/Library/Frameworks/Network.framework/Modules"/* 2>/dev/null | head -3)
-          for d in $MODDIR; do
-            echo "== $d"; ls "$d" | head -5
-          done
-          grep -rn "NWMulticastGroup" "$SDK/System/Library/Frameworks/Network.framework/Modules" \
-            --include="*.swiftinterface" | grep -v "^Binary" | head -40 || true
-          echo "---- requiredMulticastGroups ----"
-          grep -rn "requiredMulticastGroups" "$SDK/System/Library/Frameworks/Network.framework/Modules" \
-            --include="*.swiftinterface" | head -10 || echo "(不存在)"
+          IFACE="$SDK/System/Library/Frameworks/Network.framework/Modules/Network.swiftmodule/arm64-apple-ios-simulator.swiftinterface"
+          echo "==== NWGroupDescriptor 消费者 ===="
+          grep -n "NWGroupDescriptor" "$IFACE" | head -20
+          echo "==== NWMulticastGroup 类定义（1400-1460 行）===="
+          sed -n '1400,1460p' "$IFACE"
+          echo "==== requiredMulticastGroups ===="
+          grep -n "requiredMulticastGroups" "$IFACE" || echo "(不存在)"
+          echo "==== NWListener 构造器 ===="
+          grep -n "public convenience init\|public init" "$IFACE" | head -30
