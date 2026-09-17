@@ -43,7 +43,8 @@ impl Config {
         }
         let cfg = Config {
             device_id: uuid::Uuid::new_v4().to_string(),
-            device_name: random_poetic_name(),
+            // 空 = 未自选，跟随系统设备名（与手机端逻辑一致）
+            device_name: String::new(),
             http_port: crate::proto::DEFAULT_HTTP_PORT,
             download_dir: default_download_dir(),
             auto_receive: false,
@@ -51,6 +52,16 @@ impl Config {
         };
         cfg.save()?;
         Ok(cfg)
+    }
+
+    /// 生效设备名：device_name 为空 = 跟随系统设备名（用户改了计算机名会自动跟着变），
+    /// 非空 = 用户自选名（含随机诗意名）
+    pub fn effective_name(&self) -> String {
+        if self.device_name.trim().is_empty() {
+            system_device_name()
+        } else {
+            self.device_name.trim().to_string()
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -90,6 +101,8 @@ impl<'de> serde::Deserialize<'de> for Config {
         #[derive(serde::Deserialize)]
         struct Raw {
             device_id: String,
+            /// 缺省/空 = 跟随系统设备名
+            #[serde(default)]
             device_name: String,
             http_port: u16,
             download_dir: String,
@@ -112,6 +125,27 @@ impl<'de> serde::Deserialize<'de> for Config {
 
 fn default_close_action() -> String {
     "ask".into()
+}
+
+/// 系统设备名（Windows=计算机名，登录时由系统写入环境变量，等价 GetComputerName；
+/// unix=主机名）。与手机端"默认用系统设备名"的逻辑对齐。
+pub fn system_device_name() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "LocalTransfer".into())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let from_file = |p: &str| {
+            std::fs::read_to_string(p)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        from_file("/etc/hostname")
+            .or_else(|| from_file("/proc/sys/kernel/hostname"))
+            .unwrap_or_else(|| "LocalTransfer".into())
+    }
 }
 
 /// 首次启动的随机设备名：诗意形容词 + 的 + 自然意象（LocalSend 风格）。

@@ -407,8 +407,36 @@ impl RootView {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(div().text_xs().opacity(0.7).child("设备名"))
-                            .child(Input::new(&self.set_name)),
+                            .child(div().text_xs().opacity(0.7).child("设备名（留空跟随系统设备名）"))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(Input::new(&self.set_name).flex_1())
+                                    .child(
+                                        Button::new("set-name-device")
+                                            .label("使用设备名")
+                                            .outline()
+                                            .small()
+                                            .on_click(cx.listener(|this, _ev, window, cx| {
+                                                // 清空自选名 → 跟随系统设备名
+                                                this.set_name.update(cx, |s, cx| {
+                                                    s.set_value("", window, cx)
+                                                });
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("set-name-random")
+                                            .label("随机")
+                                            .outline()
+                                            .small()
+                                            .on_click(cx.listener(|this, _ev, window, cx| {
+                                                let n = transfer_core::random_poetic_name();
+                                                this.set_name.update(cx, |s, cx| {
+                                                    s.set_value(&n, window, cx)
+                                                });
+                                            })),
+                                    ),
+                            ),
                     )
                     .child(
                         v_flex()
@@ -797,9 +825,8 @@ impl RootView {
 
         let mut cfg = self.me.clone();
         let name = name.trim().to_string();
-        if !name.is_empty() {
-            cfg.device_name = name;
-        }
+        // 空 = 跟随系统设备名（与"使用设备名"按钮一致）；非空 = 自选/随机名
+        cfg.device_name = name;
         let dir = dir.trim().to_string();
         if !dir.is_empty() {
             cfg.download_dir = std::path::PathBuf::from(&dir);
@@ -814,10 +841,11 @@ impl RootView {
             Ok(()) => {
                 let port_changed = cfg.http_port != self.me.http_port;
                 // 改名要通知核心更新广播身份，否则对端看到的还是旧名
-                let name_changed = cfg.device_name != self.me.device_name;
+                // （按生效名比较：跟随系统设备名时两者同为系统名，不会误报）
+                let name_changed = cfg.effective_name() != self.me.effective_name();
                 if name_changed {
                     let _ = self.core.send(UiCommand::Rename {
-                        name: cfg.device_name.clone(),
+                        name: cfg.effective_name(),
                     });
                 }
                 self.me = cfg;

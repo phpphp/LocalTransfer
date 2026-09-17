@@ -15,7 +15,7 @@ pub use proto::{
     ChatMessage, CoreEvent, Device, DeviceInfo, FileMeta, MessageKind, UiCommand,
 };
 pub use discovery::SharedMe;
-pub use store::{Config, Store, random_poetic_name};
+pub use store::{Config, Store, random_poetic_name, system_device_name};
 
 use std::{
     collections::HashMap,
@@ -94,7 +94,7 @@ pub fn start(config: Config, store: Store, event_tx: Sender<CoreEvent>) -> Resul
 
     let me = DeviceInfo {
         id: config.device_id.clone(),
-        name: config.device_name.clone(),
+        name: config.effective_name(),
         plat: platform().to_string(),
         port: config.http_port,
         v: proto::PROTOCOL_VERSION,

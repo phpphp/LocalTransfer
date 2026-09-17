@@ -304,7 +304,10 @@ impl RootView {
         });
         let set_name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("设备名")
+                .placeholder(format!(
+                    "留空使用系统设备名（当前：{}）",
+                    transfer_core::system_device_name()
+                ))
                 .default_value(me.device_name.clone())
         });
         let set_dir = cx.new(|cx| {

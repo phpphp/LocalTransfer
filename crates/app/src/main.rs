@@ -60,11 +60,14 @@ fn main() {
     if let Some(n) = &name_override {
         config.device_name = n.clone();
     } else if instance_no > 1 && instance_no < 99 {
-        config.device_name = format!("{} ({})", config.device_name, instance_no);
+        // 后缀加在生效名上（device_name 为空=跟随系统设备名，不能把后缀写进去落盘）
+        let effective = config.effective_name();
+        config.device_name = format!("{effective} ({instance_no})");
     } else if instance_no == 99 {
         // 锁端口耗尽（≥10 个实例），随机后缀兜底
         let suffix: String = uuid::Uuid::new_v4().simple().to_string().chars().take(4).collect();
-        config.device_name = format!("{} ({suffix})", config.device_name);
+        let effective = config.effective_name();
+        config.device_name = format!("{effective} ({suffix})");
     }
     if let Some(p) = port_override {
         config.http_port = p;

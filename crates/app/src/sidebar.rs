@@ -119,7 +119,7 @@ impl RootView {
             .collect();
         online.sort_by(|a, b| a.1.cmp(&b.1));
 
-        let me_name = self.me.device_name.clone();
+        let me_name = self.me.effective_name();
         // 本机地址：优先真实局域网 IP，取不到时退回环回提示
         let me_addr = match (&self.local_ip, self.me.http_port) {
             (Some(ip), port) => format!("{ip}:{port}"),
