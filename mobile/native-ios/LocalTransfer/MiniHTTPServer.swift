@@ -295,7 +295,7 @@ final class MiniHTTPServer {
                 self.onProgress?(token, ProgressInfo(
                     peerId: sess.peerId, label: label,
                     fileIdx: sess.completed, fileCount: sess.files.count,
-                    transferred: Int64(handle?.offset() ?? 0),
+                    transferred: Int64(((try? handle?.offset()) ?? nil) ?? 0),
                     total: total))
             }
         } done: { _ in
@@ -304,8 +304,8 @@ final class MiniHTTPServer {
         }
         _ = semaphore.wait(timeout: .now() + 60)
 
-        let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)
-            [.size] as? Int64) ?? 0
+        let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         let relClean = segs.map(String.init).joined(separator: "/")
         let received = ReceivedFile(name: meta.name, relPath: relClean,
                                     size: size, url: fileURL)
