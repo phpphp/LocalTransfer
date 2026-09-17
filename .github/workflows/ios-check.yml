@@ -1,0 +1,22 @@
+name: ios-check
+
+# iOS 原生版类型检查（无 Xcode 工程，直接 swiftc -typecheck 对模拟器 SDK）。
+# 本仓库无 macOS 构建环境——这一步是 iOS 代码唯一 自动验证手段。
+on:
+  push:
+    branches: [main]
+    paths: ['mobile/native-ios/**']
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Type-check Swift sources (iOS simulator target)
+        run: |
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          xcrun swiftc -typecheck \
+            -sdk "$SDK" \
+            -target arm64-apple-ios16.0-simulator \
+            mobile/native-ios/LocalTransfer/*.swift
