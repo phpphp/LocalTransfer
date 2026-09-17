@@ -50,23 +50,20 @@ final class Discovery: ObservableObject {
 
     // MARK: UDP 多播
 
-    private func multicastParams() -> NWParameters? {
-        let udp = NWProtocolUDP.Options()
-        guard let group = try? NWMulticastGroup(for: IPv4Address(discoveryGroup)!) else {
-            return nil
-        }
-        udp.requiredMulticastGroups = [group]
-        let params = NWParameters.udp
-        params.defaultProtocolStack.transportProtocols.insert(udp, at: 0)
-        params.allowLocalEndpointReuse = true
-        return params
+    /// iOS 的多播组用端点形式（macOS 的 IPv4Address 便捷构造在 iOS SDK 不存在）：
+    /// NWMulticastGroup(for: [.host(host:port:)])，需 Info.plist 声明本地网络权限
+    private func multicastGroup() -> NWMulticastGroup? {
+        guard let port = NWEndpoint.Port(rawValue: discoveryPort) else { return nil }
+        return try? NWMulticastGroup(for: [
+            .host(host: NWEndpoint.Host(discoveryGroup), port: port)
+        ])
     }
 
     private func startMulticast() {
-        guard let params = multicastParams(),
-              let group = try? NWMulticastGroup(for: IPv4Address(discoveryGroup)!)
-        else { return }
-        let c = NWConnection(to: .multicast(group), using: params)
+        guard let group = multicastGroup() else { return }
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+        let c = NWConnection(group: group, using: params)
         groupConn = c
         c.stateUpdateHandler = { [weak self] state in
             if case .ready = state { self?.receiveLoop(on: c) }
@@ -113,12 +110,11 @@ final class Discovery: ObservableObject {
     }
 
     private func announce() {
-        guard let params = multicastParams(),
-              let group = try? NWMulticastGroup(for: IPv4Address(discoveryGroup)!)
-        else { return }
+        guard let port = NWEndpoint.Port(rawValue: discoveryPort) else { return }
         let payload = me.announceJSON()
-        // 独立短连接发送（发送组播与接收连接分离，行为最稳）
-        let c = NWConnection(to: .multicast(group), using: params)
+        // 发送：普通 host 端点直接向多播地址发 UDP（iOS 无需特殊 API）
+        let c = NWConnection(to: .host(host: NWEndpoint.Host(discoveryGroup), port: port),
+                             using: .udp)
         c.stateUpdateHandler = { state in
             if case .ready = state {
                 c.send(content: payload, completion: .contentProcessed { _ in
@@ -201,10 +197,10 @@ final class Discovery: ObservableObject {
 
     func shutdown() {
         let bye = try! JSONSerialization.data(withJSONObject: ["t": "bye", "id": me.id])
-        // 借 announce 通道发 bye
-        if let params = multicastParams(),
-           let group = try? NWMulticastGroup(for: IPv4Address(discoveryGroup)!) {
-            let c = NWConnection(to: .multicast(group), using: params)
+        // 借 announce 通道发 bye（host 端点直发多播地址）
+        if let port = NWEndpoint.Port(rawValue: discoveryPort) {
+            let c = NWConnection(to: .host(host: NWEndpoint.Host(discoveryGroup), port: port),
+                                 using: .udp)
             c.stateUpdateHandler = { state in
                 if case .ready = state {
                     c.send(content: bye, completion: .contentProcessed { _ in c.cancel() })
