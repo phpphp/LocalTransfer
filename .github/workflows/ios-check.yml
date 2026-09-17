@@ -20,3 +20,18 @@ jobs:
             -sdk "$SDK" \
             -target arm64-apple-ios16.0-simulator \
             mobile/native-ios/LocalTransfer/*.swift
+
+      # 调试步：多播 API 在 iOS SDK 的真实形态（文档与 SDK 有出入时以此为准）
+      - name: Dump NWMulticastGroup / requiredMulticastGroups interface
+        if: always()
+        run: |
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          MODDIR=$(ls -d "$SDK/System/Library/Frameworks/Network.framework/Modules"/* 2>/dev/null | head -3)
+          for d in $MODDIR; do
+            echo "== $d"; ls "$d" | head -5
+          done
+          grep -rn "NWMulticastGroup" "$SDK/System/Library/Frameworks/Network.framework/Modules" \
+            --include="*.swiftinterface" | grep -v "^Binary" | head -40 || true
+          echo "---- requiredMulticastGroups ----"
+          grep -rn "requiredMulticastGroups" "$SDK/System/Library/Frameworks/Network.framework/Modules" \
+            --include="*.swiftinterface" | head -10 || echo "(不存在)"

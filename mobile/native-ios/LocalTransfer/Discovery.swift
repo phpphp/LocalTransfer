@@ -55,7 +55,7 @@ final class Discovery: ObservableObject {
     private func multicastGroup() -> NWMulticastGroup? {
         guard let port = NWEndpoint.Port(rawValue: discoveryPort) else { return nil }
         return try? NWMulticastGroup(for: [
-            .host(host: NWEndpoint.Host(discoveryGroup), port: port)
+            .hostPort(host: NWEndpoint.Host(discoveryGroup), port: port)
         ])
     }
 
