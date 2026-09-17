@@ -9,6 +9,8 @@ struct Peer: Identifiable {
     var lastSeen: Date
     var id: String { info.id }
     var online: Bool { manual || Date().timeIntervalSince(lastSeen) < 15 }
+    /// HTTP 基址（TransferApi 用）
+    var httpBase: String { "http://\(addr):\(info.port)" }
 }
 
 /// 发现协议（与桌面端/Flutter/Android 版一致）：
