@@ -334,8 +334,6 @@ struct RootView: View {
 }
 
 extension AppModel {
-    // sheet 绑定用的轻量 @Published（放 extension 里集中管理存到…流程）
-    @Published var showSaveDirPicker = false
     private var pickingReq: IncomingReq? { pendingReqs.first }
 
     /// "存到…"：弹系统目录选择器（Files App 的任意位置）
@@ -352,8 +350,9 @@ extension AppModel {
             req.complete(true)
             pendingReqs.removeAll { $0.id == req.id }
             sendStatus = "本批将保存到 \(url.lastPathComponent)"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                if sendStatus == "本批将保存到 \(url.lastPathComponent)" { sendStatus = nil }
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                self?.sendStatus = nil
             }
         }
     }
@@ -725,76 +724,13 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let s = model.sendStatus {
-                Text(s).font(.caption).frame(maxWidth: .infinity)
-                    .padding(.vertical, 4).background(.fill.opacity(0.5))
-            }
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(model.chats[peerId] ?? []) { e in
-                        Bubble(entry: e, speed: model.speeds[tokenFor(e)])
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    model.deleteEntry(e.id, in: peerId)
-                                } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                                if e.isFile, let files = e.files {
-                                    ForEach(files.prefix(8)) { f in
-                                        Button {
-                                            if let url = f.url {
-                                                UIApplication.shared.open(url)
-                                            }
-                                        } label: {
-                                            Label("打开 \(f.name)", systemImage: "doc")
-                                        }
-                                    }
-                                }
-                            }
-                    }
-                    ForEach(activeProgress, id: \.label) { p in
-                        let key = model.progress.first { $0.value.label == p.label }?.key
-                        Bubble(entry: .progress(label: p.label, idx: p.fileIdx,
-                                                count: p.fileCount,
-                                                transferred: p.transferred,
-                                                total: p.total),
-                               speed: key.flatMap { model.speeds[$0] })
-                    }
-                }
-                .padding()
-            }
-            HStack {
-                Button { showPicker = true } label: { Image(systemName: "paperclip") }
-                    .buttonStyle(.bordered)
-                Button { showFolderPicker = true } label: { Image(systemName: "folder") }
-                    .buttonStyle(.bordered)
-                Button { model.sendClipboard() } label: { Image(systemName: "doc.on.clipboard") }
-                    .buttonStyle(.bordered)
-                TextField("输入消息", text: $input, axis: .vertical)
-                    .textFieldStyle(.roundedBorder).lineLimit(1...4)
-                    .onSubmit(send)
-                Button("发送", action: send).buttonStyle(.borderedProminent)
-            }
-            .padding(8)
+            statusLine
+            messageList
+            inputBar
         }
         .navigationTitle(model.disc.peers[peerId]?.info.name ?? "设备")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(role: .destructive) {
-                    if confirmClear {
-                        model.clearChat(peerId); confirmClear = false
-                    } else {
-                        confirmClear = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            confirmClear = false
-                        }
-                    }
-                } label: {
-                    Image(systemName: confirmClear ? "checkmark.circle" : "trash.slash")
-                }
-            }
-        }
+        .toolbar { clearToolbar }
         .fileImporter(isPresented: $showPicker, allowedContentTypes: [.data],
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { model.sendPicked(urls) }
@@ -803,6 +739,91 @@ struct ChatView: View {
                       allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let u = urls.first {
                 model.sendFolder(u)
+            }
+        }
+    }
+
+    @ViewBuilder private var statusLine: some View {
+        if let s = model.sendStatus {
+            Text(s).font(.caption).frame(maxWidth: .infinity)
+                .padding(.vertical, 4).background(.fill.opacity(0.5))
+        }
+    }
+
+    private var messageList: some View {
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(model.chats[peerId] ?? []) { e in
+                    self.chatRow(e)
+                }
+                ForEach(activeProgress, id: \.label) { p in
+                    self.progressRow(p)
+                }
+            }
+            .padding()
+        }
+    }
+
+    private func chatRow(_ e: ChatEntry) -> some View {
+        Bubble(entry: e, speed: model.speeds[tokenFor(e)])
+            .contextMenu { rowMenu(e) }
+    }
+
+    @ViewBuilder private func rowMenu(_ e: ChatEntry) -> some View {
+        Button(role: .destructive) {
+            model.deleteEntry(e.id, in: peerId)
+        } label: {
+            Label("删除", systemImage: "trash")
+        }
+        if e.isFile, let files = e.files {
+            ForEach(Array(files.prefix(8))) { f in
+                Button {
+                    if let url = f.url { UIApplication.shared.open(url) }
+                } label: {
+                    Label("打开 \(f.name)", systemImage: "doc")
+                }
+            }
+        }
+    }
+
+    private func progressRow(_ p: MiniHTTPServer.ProgressInfo) -> some View {
+        let key = model.progress.first { $0.value.label == p.label }?.key
+        let speed = key.flatMap { model.speeds[$0] }
+        let entry = ChatEntry.progress(label: p.label, idx: p.fileIdx,
+                                       count: p.fileCount,
+                                       transferred: p.transferred, total: p.total)
+        return Bubble(entry: entry, speed: speed)
+    }
+
+    private var inputBar: some View {
+        HStack {
+            Button { showPicker = true } label: { Image(systemName: "paperclip") }
+                .buttonStyle(.bordered)
+            Button { showFolderPicker = true } label: { Image(systemName: "folder") }
+                .buttonStyle(.bordered)
+            Button { model.sendClipboard() } label: { Image(systemName: "doc.on.clipboard") }
+                .buttonStyle(.bordered)
+            TextField("输入消息", text: $input, axis: .vertical)
+                .textFieldStyle(.roundedBorder).lineLimit(1...4)
+                .onSubmit(send)
+            Button("发送", action: send).buttonStyle(.borderedProminent)
+        }
+        .padding(8)
+    }
+
+    private var clearToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button(role: .destructive) {
+                if confirmClear {
+                    model.clearChat(peerId); confirmClear = false
+                } else {
+                    confirmClear = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        confirmClear = false
+                    }
+                }
+            } label: {
+                Image(systemName: confirmClear ? "checkmark.circle" : "trash.slash")
             }
         }
     }

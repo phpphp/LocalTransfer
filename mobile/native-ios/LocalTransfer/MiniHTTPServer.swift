@@ -121,7 +121,7 @@ final class MiniHTTPServer {
             }
             let head = String(data: buf[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
             let lines = head.components(separatedBy: "\r\n")
-            guard let reqLine = lines.first?.components(separatedBy: "),
+            guard let reqLine = lines.first?.components(separatedBy: " "),
                   reqLine.count >= 2 else { conn.cancel(); return }
             var headers: [String: String] = [:]
             lines.dropFirst().forEach { l in
