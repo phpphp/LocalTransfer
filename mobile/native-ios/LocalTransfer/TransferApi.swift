@@ -27,10 +27,12 @@ final class TransferApi: NSObject, URLSessionTaskDelegate {
         }
     }
 
-    /// 发一组文件：prepare（≤60s 等确认）→ 逐文件上传。
+    /// 发一组文件：prepare（≤5 分钟等确认）→ 逐文件上传。
     /// [onProgress] 在后台线程回调 (fileIdx, transferred, total)。
+    /// 返回 false = 对方 5 分钟没点确认（等待确认超时，静默取消不提示）；
+    /// 其余失败照旧抛错。
     func sendFiles(peer: Peer, files: [(FileMeta, URL)],
-                   onProgress: @escaping (Int, Int64, Int64) -> Void) async throws {
+                   onProgress: @escaping (Int, Int64, Int64) -> Void) async throws -> Bool {
         progressHandler = onProgress
 
         // 1) prepare
@@ -50,9 +52,9 @@ final class TransferApi: NSObject, URLSessionTaskDelegate {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
         if code == 403 {
             let msg = String(data: data, encoding: .utf8) ?? ""
-            throw TransferError.text(
-                msg.contains("超时") ? "等待确认超时：请在 60 秒内在电脑端点「接收」"
-                                    : "对方拒绝了传输")
+            // 等待确认超时 ≠ 拒绝：对方没点接收往往就是不想收，静默收场
+            if msg.contains("超时") { return false }
+            throw TransferError.text("对方拒绝了传输")
         }
         guard code == 200,
               let token = (try? JSONSerialization.jsonObject(with: data)
@@ -78,6 +80,7 @@ final class TransferApi: NSObject, URLSessionTaskDelegate {
                 throw TransferError.text("上传失败（\(upCode)）")
             }
         }
+        return true
     }
 
     // 进度 delegate

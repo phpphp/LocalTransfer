@@ -6,6 +6,8 @@ final class IncomingReq: Identifiable {
     let id = UUID()
     let peer: DeviceInfo
     let files: [FileMeta]
+    /// "存到…"选定的接收目录（nil=默认 Inbox）；UI 在 complete(true) 前设置
+    var customDir: URL?
     private var answer: Bool?
     private let lock = NSLock()
 
@@ -31,10 +33,11 @@ final class RecvSession {
     let token: String
     let peerId: String
     let files: [FileMeta]
+    let saveURL: URL?     // "存到…"目录（nil=默认 Inbox）
     var done: [ReceivedFile] = []
     var completed = 0
-    init(token: String, peerId: String, files: [FileMeta]) {
-        self.token = token; self.peerId = peerId; self.files = files
+    init(token: String, peerId: String, files: [FileMeta], saveURL: URL? = nil) {
+        self.token = token; self.peerId = peerId; self.files = files; self.saveURL = saveURL
     }
 }
 
@@ -50,7 +53,7 @@ final class MiniHTTPServer {
     var onMessage: ((String, String, String) -> Void)?          // peerId, name, text
     var onIncoming: ((IncomingReq) -> Void)?
     var onProgress: ((String, ProgressInfo) -> Void)?           // token, info
-    var onBatchDone: ((String, [ReceivedFile]) -> Void)?
+    var onBatchDone: ((String, [ReceivedFile], URL?) -> Void)?   // 含"存到…"目录（用于释放访问权限）
 
     private var me: DeviceInfo   // 端口确定后回填（var）
     private var listener: NWListener?
@@ -249,15 +252,16 @@ final class MiniHTTPServer {
                     let token = UUID().uuidString
                     sessionsLock.lock()
                     sessions[token] = RecvSession(token: token, peerId: req.peer.id,
-                                                  files: req.files)
+                                                  files: req.files, saveURL: req.customDir)
                     sessionsLock.unlock()
                     return (200, try! JSONSerialization.data(withJSONObject: ["token": token]), true)
                 }
-                return (403, Data(), false)
+                // 响应体区分拒绝/超时：发送方靠"超时"关键字静默收场
+                return (403, Data("对方拒绝了传输".utf8), false)
             }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        return (403, Data(), false)
+        return (403, Data("等待确认超时".utf8), false)
     }
 
     private func upload(_ token: String, _ fileId: String,
@@ -273,7 +277,8 @@ final class MiniHTTPServer {
         let segs = meta.relPath.split(separator: "/").filter {
             !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains(":")
         }
-        let fileURL = saveDir.appendingPathComponent(segs.map(String.init).joined(separator: "/"))
+        let baseDir = sess.saveURL ?? saveDir
+        let fileURL = baseDir.appendingPathComponent(segs.map(String.init).joined(separator: "/"))
         try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
@@ -301,7 +306,9 @@ final class MiniHTTPServer {
 
         let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)
             [.size] as? Int64) ?? 0
-        let received = ReceivedFile(name: meta.name, size: size, url: fileURL)
+        let relClean = segs.map(String.init).joined(separator: "/")
+        let received = ReceivedFile(name: meta.name, relPath: relClean,
+                                    size: size, url: fileURL)
 
         sessionsLock.lock()
         sess.done.append(received)
@@ -310,7 +317,7 @@ final class MiniHTTPServer {
         if finished { sessions.removeValue(forKey: token) }
         sessionsLock.unlock()
         if finished {
-            DispatchQueue.main.async { self.onBatchDone?(sess.peerId, sess.done) }
+            DispatchQueue.main.async { self.onBatchDone?(sess.peerId, sess.done, sess.saveURL) }
         }
         return (200, Data(), false)
     }

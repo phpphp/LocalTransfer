@@ -17,7 +17,7 @@ struct Peer: Identifiable {
 final class Discovery: ObservableObject {
     @Published var peers: [String: Peer] = [:]
 
-    private let me: DeviceInfo
+    private var me: DeviceInfo   // var：改名后下一条 announce 携带新名
     private var groupConn: NWConnection?
     private let queue = DispatchQueue(label: "lt.discovery")
     private var lastReply: [String: Date] = [:]
@@ -25,6 +25,9 @@ final class Discovery: ObservableObject {
     private var scanThread: Thread?
 
     init(me: DeviceInfo) { self.me = me }
+
+    /// 改名（立即生效于后续 announce 与单播回复）
+    func setName(_ name: String) { me.name = name }
 
     func start() {
         startMulticast()
