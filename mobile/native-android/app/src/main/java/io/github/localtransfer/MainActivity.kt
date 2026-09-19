@@ -1539,9 +1539,14 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                         onLongClick = { menu = true },
                     )) {
                 when (e) {
-                    is ChatEntry.Text -> Text(e.text,
-                        color = if (end) androidx.compose.ui.graphics.Color.White
-                        else MaterialTheme.colorScheme.onSurface)
+                    // 部分复制：SelectionContainer 原生长按选择+拖动手柄+复制工具条
+                    // （长按文字=选择；长按气泡边缘 padding=原删除/复制菜单，互不冲突）
+                    is ChatEntry.Text ->
+                        androidx.compose.foundation.text.selection.SelectionContainer {
+                            Text(e.text,
+                                color = if (end) androidx.compose.ui.graphics.Color.White
+                                else MaterialTheme.colorScheme.onSurface)
+                        }
                     // 文件卡只展示，不可点击（用户明确要求）
                     is ChatEntry.FileCard -> Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {

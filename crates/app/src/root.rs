@@ -245,6 +245,9 @@ pub struct RootView {
     /// 聊天消息流的虚拟列表状态（尾部跟随，新消息自动滚到底）
     pub scroller: Entity<MessageScrollerState>,
 
+    /// 文本消息的可选中渲染状态（msg.id → TextViewState；懒建缓存）
+    pub text_views: HashMap<i64, Entity<gpui_kit::component::text::TextViewState>>,
+
     /// 清空聊天记录的两段确认状态（peer, 时间）
     pub confirm_clear: Option<(String, Instant)>,
 
@@ -360,6 +363,7 @@ impl RootView {
             input,
             toast: None,
             scroller,
+            text_views: HashMap::new(),
             confirm_clear: None,
             show_settings: false,
             set_name,
@@ -798,6 +802,8 @@ impl RootView {
         if let Some(msgs) = self.chats.get_mut(peer) {
             msgs.retain(|m| !ids.contains(&m.id));
         }
+        // 同步清掉可选中渲染状态缓存
+        self.text_views.retain(|id, _| !ids.contains(id));
         self.sync_scroller(cx);
         cx.notify();
     }

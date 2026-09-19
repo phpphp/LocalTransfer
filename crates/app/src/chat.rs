@@ -12,6 +12,7 @@ use gpui_kit::component::bubble::{Bubble, BubbleVariant};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::message::{Message, MessageAlignment, MessageContent, MessageFooter};
+use gpui_kit::base::{TextView as SelectableText, TextViewState, TextViewStyle as SelectableStyle};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
 use gpui_kit::component::progress::Progress;
@@ -72,6 +73,14 @@ fn saved_path_of(msg: &transfer_core::ChatMessage) -> Option<PathBuf> {
         MessageKind::File { saved_path, .. } => saved_path.clone(),
         _ => None,
     }
+}
+
+/// 纯文本 → TextView 的 HTML（转义 + 换行；HTML 格式避免 Markdown 误解析 *_# 等字符）
+fn text_to_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\n', "<br>")
 }
 
 impl RootView {
@@ -681,7 +690,7 @@ impl RootView {
     }
 
     fn render_message(
-        &self,
+        &mut self,
         msg: &transfer_core::ChatMessage,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -695,12 +704,29 @@ impl RootView {
 
         let bubble = match &msg.kind {
             MessageKind::Text(text) => {
-                let text_for_copy = text.clone();
-                // 右键菜单：复制 / 删除（收发两侧都有）
+                // 可选中文本：TextView（拖选部分 + Ctrl+C / 右键复制），
+                // 顺带解决 gpui 普通文本 \n 折叠的问题（HTML 格式 <br> 换行）。
+                // 用 HTML 而非 Markdown：纯文本里 *_# 等字符不能被误解析成格式
+                let state = match self.text_views.get(&msg.id) {
+                    Some(s) => s.clone(),
+                    None => {
+                        let s = cx.new(|cx| {
+                            TextViewState::html(&text_to_html(text), cx)
+                        });
+                        self.text_views.insert(msg.id, s.clone());
+                        s
+                    }
+                };
+                // 右键菜单：复制全文 / 删除（收发两侧都有；部分复制走拖选）
                 let text_for_menu = text.clone();
                 let peer_id = msg.peer_id.clone();
                 let msg_id = msg.id;
                 let handle = cx.entity();
+                let fg = if mine {
+                    gpui::white()
+                } else {
+                    cx.theme().foreground
+                };
                 Bubble::new()
                     .alignment(align)
                     .with_variant(if mine {
@@ -712,25 +738,11 @@ impl RootView {
                         div()
                             .id(SharedString::from(format!("msg-{}", msg.id)))
                             .min_w_0()
-                            // 双击复制（收发两侧都是；单击不响应）
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(
-                                    move |this, ev: &MouseDownEvent, _window, cx| {
-                                        if ev.click_count >= 2 {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                text_for_copy.clone(),
-                                            ));
-                                            this.toast("已复制到剪贴板", false);
-                                        }
-                                    },
-                                ),
-                            )
                             .context_menu(move |menu, _window, _cx| {
                                 let (h, t, p) =
                                     (handle.clone(), text_for_menu.clone(), peer_id.clone());
                                 menu.item(
-                                    PopupMenuItem::new("复制").on_click(
+                                    PopupMenuItem::new("复制全文").on_click(
                                         move |_ev, _window, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 t.clone(),
@@ -746,19 +758,11 @@ impl RootView {
                                     },
                                 ))
                             })
-                            // gpui 文本元素把 \n 按 CSS 语义折叠成空格，
-                            // 换行要按行拆开渲染
                             .child(
-                                v_flex()
-                                    .min_w_0()
-                                    .children(
-                                        text.lines().map(|l| {
-                                            div()
-                                                .min_w_0()
-                                                .line_height(px(20.))
-                                                .child(l.to_string())
-                                        }),
-                                    ),
+                                SelectableText::new(&state)
+                                    .selectable(true)
+                                    // 气泡底色不同（发送=主色填充），前景色要显式给
+                                    .style(SelectableStyle::default().with_foreground(fg)),
                             ),
                     )
             }

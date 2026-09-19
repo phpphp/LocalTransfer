@@ -864,9 +864,9 @@ struct Bubble: View {
     @ViewBuilder private var content: some View {
         switch entry.kind {
         case .text(let t):
+            // 部分复制：原生文本选择（长按出选择手柄，系统菜单含拷贝）
             Text(t).foregroundColor(entry.outgoing ? .white : .primary)
-                // 双击复制（与 Android 一致）
-                .onTapGesture(count: 2) { UIPasteboard.general.string = t }
+                .textSelection(.enabled)
         case .fileCard(let title, let size, let location, let files):
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
