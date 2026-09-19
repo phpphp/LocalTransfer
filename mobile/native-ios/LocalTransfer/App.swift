@@ -752,16 +752,28 @@ struct ChatView: View {
     }
 
     private var messageList: some View {
-        ScrollView {
-            LazyVStack(spacing: 6) {
-                ForEach(model.chats[peerId] ?? []) { e in
-                    self.chatRow(e)
+        // 新消息自动滚到底（进会话也定位到底部）
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(model.chats[peerId] ?? []) { e in
+                        self.chatRow(e)
+                    }
+                    ForEach(activeProgress, id: \.label) { p in
+                        self.progressRow(p)
+                    }
+                    Color.clear.frame(height: 1).id("chat-bottom")
                 }
-                ForEach(activeProgress, id: \.label) { p in
-                    self.progressRow(p)
+                .padding()
+            }
+            .onAppear {
+                proxy.scrollTo("chat-bottom", anchor: .bottom)
+            }
+            .onChange(of: (model.chats[peerId] ?? []).count + activeProgress.count) { _ in
+                withAnimation {
+                    proxy.scrollTo("chat-bottom", anchor: .bottom)
                 }
             }
-            .padding()
         }
     }
 

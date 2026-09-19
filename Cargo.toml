@@ -36,5 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
+# 注意：勿开 lto（含 thin）——实测 thin-LTO 会把部分字符串字面量
+# （如聊天右键菜单的"复制全文"）从最终二进制中消除，功能随之失效；
+# 对照实验 CARGO_PROFILE_RELEASE_LTO=false 构建则正常。体积差 ~1MB 可接受。
 [profile.release]
-lto = "thin"

@@ -11,6 +11,10 @@ $Iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 Write-Output "== 构建 release =="
 Get-Process -Name local-transfer -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 600
+# 机器时钟跳变会让 cargo 增量误判 up-to-date、产出不含新代码的旧 exe（发生过多次）；
+# 每次清掉 app crate 的 release 产物强制重编（依赖缓存保留，多花 ~40s 换确定性）
+cargo clean --release -p local-transfer
+if ($LASTEXITCODE -ne 0) { Write-Output "CLEAN FAILED"; exit 1 }
 cargo build --release
 if ($LASTEXITCODE -ne 0) { Write-Output "BUILD FAILED"; exit 1 }
 

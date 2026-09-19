@@ -1373,7 +1373,21 @@ fun ChatScreen(peerId: String) {
                     color = androidx.compose.ui.graphics.Color(0xFFEF4444),
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp))
             }
+            // 消息列表：新消息自动滚到底（用户已滚上去翻历史时不打扰——
+            // 只有本来就停在底部附近才跟随）
+            val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+            val totalRows = msgs.size + progresses.size
+            androidx.compose.runtime.LaunchedEffect(totalRows) {
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()
+                val nearBottom = last == null ||
+                    last.index >= totalRows - 2 || info.totalItemsCount == 0
+                if (nearBottom && totalRows > 0) {
+                    listState.animateScrollToItem(totalRows - 1)
+                }
+            }
             LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp),
+                state = listState,
                 reverseLayout = false) {
                 items(msgs.size + progresses.size) { i ->
                     if (i < msgs.size) MessageBubble(msgs[i],
