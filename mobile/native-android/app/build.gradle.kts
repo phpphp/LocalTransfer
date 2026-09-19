@@ -75,3 +75,41 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }
+
+// ---------------------------------------------------------------------------
+// 构建产物自动归档：assembleRelease/assembleDebug 后自动复制——
+//   app-release.apk → mobile/native-android/app-release.apk（仓库根副本，git 跟踪）
+//   app-debug.apk   → mobile/native-android/app-debug.apk
+//   app-release.apk → 仓库根 dist/LocalTransfer-<版本>-android-native.apk
+// 版本读根 Cargo.toml（与 make-installer.ps1 / update-dist.ps1 的版本约定一致），
+// 任何构建入口（命令行 gradle / Android Studio / CI）都生效。
+// ---------------------------------------------------------------------------
+val repoRoot = rootProject.projectDir.parentFile.parentFile   // mobile/native-android → 仓库根
+val appVersion = File(repoRoot, "Cargo.toml").takeIf { it.exists() }
+    ?.readText()?.lineSequence()
+    ?.firstOrNull { it.trimStart().startsWith("version = ") }
+    ?.substringAfter("\"")?.substringBefore("\"") ?: "0.0.0"
+
+tasks.register("archiveApks") {
+    group = "build"
+    description = "归档 APK 到仓库根副本与 dist/"
+    doLast {
+        val outputsDir = File(layout.buildDirectory.get().asFile, "outputs/apk")
+        val rel = File(outputsDir, "release/app-release.apk")
+        val dbg = File(outputsDir, "debug/app-debug.apk")
+        if (rel.exists()) {
+            rel.copyTo(File(rootProject.projectDir, "app-release.apk"), overwrite = true)
+            val distDir = File(repoRoot, "dist").apply { mkdirs() }
+            rel.copyTo(File(distDir, "LocalTransfer-$appVersion-android-native.apk"),
+                overwrite = true)
+        }
+        if (dbg.exists()) {
+            dbg.copyTo(File(rootProject.projectDir, "app-debug.apk"), overwrite = true)
+        }
+        logger.lifecycle("APK 已归档（版本 $appVersion）：仓库根副本 + dist/")
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" || it.name == "assembleDebug" }.configureEach {
+    finalizedBy("archiveApks")
+}
