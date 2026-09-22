@@ -481,13 +481,15 @@ impl RootView {
                     *self.unread.entry(peer.clone()).or_insert(0) += 1;
                     self.sync_tray_badge();
                 }
-                // 后台时弹系统通知（QQ/微信式提醒）
+                // 后台时弹系统通知 + 任务栏按钮闪烁（QQ/微信式提醒；
+                // 托盘未读红点闪烁由 sync_tray_badge 驱动）
                 if !self.window_active {
                     let name = self.peer_name(&peer);
                     if let MessageKind::Text(t) = &msg.kind {
                         let preview: String = t.chars().take(40).collect();
                         desktop_notify(&name, &preview);
                     }
+                    crate::tray::flash_taskbar();
                 }
                 self.append_message(peer, msg);
             }
@@ -501,6 +503,7 @@ impl RootView {
                         &format!("{} 想发送文件", peer.info.name),
                         &format!("{} 个文件 · 点击处理", files.len()),
                     );
+                    crate::tray::flash_taskbar();
                 }
                 // 多个待确认请求并存入队（旧的不再被新请求顶掉/拒绝——
                 // 曾经新请求直接回绝旧请求 403，对方的卡片秒变"被拒绝"）
@@ -654,12 +657,13 @@ impl RootView {
                                 f.transferred = f.meta.size;
                             }
                         }
-                        // 接收完成 → 后台时弹系统通知
+                        // 接收完成 → 后台时弹系统通知 + 任务栏闪烁
                         if !self.window_active {
                             let what = crate::root::transfer_display_name(&t.files);
                             let peer_id = t.peer_id.clone();
                             let name = self.peer_name(&peer_id);
                             desktop_notify(&format!("已接收 · {name}"), &what);
+                            crate::tray::flash_taskbar();
                         }
                     }
                 }

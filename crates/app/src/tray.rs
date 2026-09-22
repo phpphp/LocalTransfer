@@ -242,6 +242,28 @@ pub fn hide_main_window() {
     }
 }
 
+/// 任务栏按钮橙色闪烁（仿微信：收到新消息且窗口不在前台时触发；
+/// FLASHW_TIMERNOFG = 持续闪烁直到用户点回窗口）
+#[cfg(target_os = "windows")]
+pub fn flash_taskbar() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FlashWindowEx, FLASHWINFO, FLASHW_ALL, FLASHW_TIMERNOFG,
+    };
+    if let Some(h) = find_main_window() {
+        let info = FLASHWINFO {
+            cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+            hwnd: h as _,
+            dwFlags: FLASHW_ALL | FLASHW_TIMERNOFG,
+            uCount: 0,
+            dwTimeout: 0,
+        };
+        unsafe { FlashWindowEx(&info) };
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn flash_taskbar() {}
+
 #[cfg(not(target_os = "windows"))]
 pub fn show_main_window() {}
 

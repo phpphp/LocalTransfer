@@ -717,7 +717,7 @@ impl RootView {
                         s
                     }
                 };
-                // 右键菜单：复制全文 / 删除（收发两侧都有；部分复制走拖选）
+                // 右键菜单：复制 / 删除（收发两侧都有；部分复制走拖选）
                 let text_for_menu = text.clone();
                 let peer_id = msg.peer_id.clone();
                 let msg_id = msg.id;
@@ -742,7 +742,9 @@ impl RootView {
                                 let (h, t, p) =
                                     (handle.clone(), text_for_menu.clone(), peer_id.clone());
                                 menu.item(
-                                    PopupMenuItem::new("复制全文").on_click(
+                                    PopupMenuItem::new("复制")
+                                        .icon(IconName::Copy)
+                                        .on_click(
                                         move |_ev, _window, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 t.clone(),
@@ -750,7 +752,9 @@ impl RootView {
                                         },
                                     ),
                                 )
-                                .item(PopupMenuItem::new("删除").on_click(
+                                .item(PopupMenuItem::new("删除")
+                                    .icon(IconName::Delete)
+                                    .on_click(
                                     move |_ev, _window, cx| {
                                         h.update(cx, |this, cx| {
                                             this.delete_messages(&p, &[msg_id], cx)
@@ -794,7 +798,9 @@ impl RootView {
                             .min_w_0()
                             .context_menu(move |menu, _window, _cx| {
                                 let (h, p) = (handle.clone(), peer_id.clone());
-                                menu.item(PopupMenuItem::new("删除").on_click(
+                                menu.item(PopupMenuItem::new("删除")
+                                    .icon(IconName::Delete)
+                                    .on_click(
                                     move |_ev, _window, cx| {
                                         h.update(cx, |this, cx| {
                                             this.delete_messages(&p, &[msg_id], cx)
@@ -1051,7 +1057,9 @@ impl RootView {
                                 .context_menu(move |menu, _window, _cx| {
                                     let (h, p, ids) =
                                         (handle.clone(), peer_id.clone(), ids.clone());
-                                    menu.item(PopupMenuItem::new("删除").on_click(
+                                    menu.item(PopupMenuItem::new("删除")
+                                        .icon(IconName::Delete)
+                                        .on_click(
                                         move |_ev, _window, cx| {
                                             h.update(cx, |this, cx| {
                                                 this.delete_messages(&p, &ids, cx)
