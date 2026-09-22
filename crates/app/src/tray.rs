@@ -86,8 +86,10 @@ fn run_tray() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, SetTimer, TranslateMessage, MSG, WM_TIMER,
     };
-    const TIMER_ID: usize = 1;
-    if unsafe { SetTimer(std::ptr::null_mut(), TIMER_ID, 700, None) } == 0 {
+    // hWnd=NULL 时 Windows 无视传入 id、自分配新 id 并作为返回值——
+    // 之前拿 wParam==1 匹配永远不成立（实测 id=4512），闪烁从未生效
+    let timer_id = unsafe { SetTimer(std::ptr::null_mut(), 1, 700, None) };
+    if timer_id == 0 {
         tracing::warn!("SetTimer 失败，托盘闪烁与事件将不可用");
     }
 
@@ -107,7 +109,7 @@ fn run_tray() {
         if r <= 0 {
             break 'pump; // WM_QUIT / 错误
         }
-        if msg.message == WM_TIMER && msg.wParam == TIMER_ID {
+        if msg.message == WM_TIMER && msg.wParam == timer_id {
             let unread = BADGE.load(Ordering::Relaxed);
             if unread && badge.is_some() {
                 blink_on = !blink_on;
@@ -116,7 +118,9 @@ fn run_tray() {
                 } else {
                     normal.clone()
                 };
-                let _ = tray.set_icon(Some(icon));
+                if let Err(e) = tray.set_icon(Some(icon)) {
+                    tracing::warn!("托盘图标切换失败: {e:?}");
+                }
             } else if blink_on {
                 blink_on = false;
                 let _ = tray.set_icon(Some(normal.clone()));
@@ -128,7 +132,9 @@ fn run_tray() {
                 } else {
                     "LocalTransfer"
                 };
-                let _ = tray.set_tooltip(Some(tip));
+                if let Err(e) = tray.set_tooltip(Some(tip)) {
+                    tracing::warn!("托盘 tooltip 更新失败: {e:?}");
+                }
             }
         }
         unsafe {
@@ -242,8 +248,26 @@ pub fn hide_main_window() {
     }
 }
 
+/// 本机主窗口当前是否前台（事件时刻实时查询）。
+/// 不能用渲染缓存的 window_active——切走窗口后不再重绘，缓存永远是 true，
+/// 后台提醒（闪烁/通知）的条件永远不成立。
+#[cfg(target_os = "windows")]
+pub fn is_foreground() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    match find_main_window() {
+        Some(h) => unsafe { GetForegroundWindow() as isize == h },
+        None => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_foreground() -> bool {
+    false
+}
+
 /// 任务栏按钮橙色闪烁（仿微信：收到新消息且窗口不在前台时触发；
-/// FLASHW_TIMERNOFG = 持续闪烁直到用户点回窗口）
+/// FLASHW_TIMERNOFG = 持续闪烁直到用户点回窗口。窗口藏在托盘时
+/// 任务栏没有按钮可闪——那种场景靠托盘红点闪烁提醒）
 #[cfg(target_os = "windows")]
 pub fn flash_taskbar() {
     use windows_sys::Win32::UI::WindowsAndMessaging::{

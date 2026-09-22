@@ -63,6 +63,10 @@ Name: "startmenuicon"; Description: "创建开始菜单快捷方式(&S)"; GroupD
 [Files]
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\README.txt"; DestDir: "{app}"; Flags: ignoreversion
+; 托盘图标（icon-normal/badge.png——缺了托盘不出现）+ 通知 AUMID 图标（icon.ico）
+Source: "..\assets\icon-normal.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\assets\icon-badge.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\assets\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\add-firewall-rule.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 

@@ -477,13 +477,17 @@ impl RootView {
             CoreEvent::Message { msg } => {
                 let peer = msg.peer_id.clone();
                 let is_selected = self.selected.as_deref() == Some(peer.as_str());
-                if !is_selected {
+                // 实时查前台（渲染缓存的 window_active 切走后不刷新，永远 true）
+                let foreground = crate::tray::is_foreground();
+                // 未读 = 不在对应会话，或窗口在后台（后台收到的消息都算未读——
+                // 否则"藏到托盘+会话选中"的场景托盘永不闪、毫无提醒）
+                if !is_selected || !foreground {
                     *self.unread.entry(peer.clone()).or_insert(0) += 1;
                     self.sync_tray_badge();
                 }
                 // 后台时弹系统通知 + 任务栏按钮闪烁（QQ/微信式提醒；
                 // 托盘未读红点闪烁由 sync_tray_badge 驱动）
-                if !self.window_active {
+                if !foreground {
                     let name = self.peer_name(&peer);
                     if let MessageKind::Text(t) = &msg.kind {
                         let preview: String = t.chars().take(40).collect();
@@ -498,12 +502,13 @@ impl RootView {
                 peer,
                 files,
             } => {
-                if !self.window_active {
+                if !crate::tray::is_foreground() {
                     desktop_notify(
                         &format!("{} 想发送文件", peer.info.name),
                         &format!("{} 个文件 · 点击处理", files.len()),
                     );
                     crate::tray::flash_taskbar();
+                    self.sync_tray_badge();   // 请求卡也点亮托盘红点
                 }
                 // 多个待确认请求并存入队（旧的不再被新请求顶掉/拒绝——
                 // 曾经新请求直接回绝旧请求 403，对方的卡片秒变"被拒绝"）
@@ -658,7 +663,7 @@ impl RootView {
                             }
                         }
                         // 接收完成 → 后台时弹系统通知 + 任务栏闪烁
-                        if !self.window_active {
+                        if !crate::tray::is_foreground() {
                             let what = crate::root::transfer_display_name(&t.files);
                             let peer_id = t.peer_id.clone();
                             let name = self.peer_name(&peer_id);
