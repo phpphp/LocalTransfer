@@ -25,20 +25,6 @@ winreg = "0.55"
 tauri-winrt-notification = "0.8"
 
 [target."cfg(windows)".dependencies]
-# windows crate 仅用于 ITaskbarList3（任务栏角标）——元数据生成的绑定，
-# 手工 vtable 试过槽 16/19 分别 E_INVALIDARG / 崩 explorer，不再折腾
-windows = { version = "0.61", features = [
-  "Win32_UI_Shell",
-  "Win32_System_Com",
-  "Win32_Foundation",
-  "Win32_UI_WindowsAndMessaging",
-] }
 tray-icon = "0.24.2"
 image = "0.25"
-windows-sys = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_UI_WindowsAndMessaging",
-  "Win32_UI_Shell",
-  "Win32_System_Com",
-  "Win32_Graphics_Gdi",
-] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

@@ -40,45 +40,18 @@ fn load_icon(name: &str) -> Option<tray_icon::Icon> {
 }
 
 
-/// 任务栏按钮角标（未读持续标记）。windows crate 绑定（ITaskbarList3）。
+/// 图标低透明度版（闪烁"隐藏相位"占位，避免图标真的消失/位置塌陷）
 #[cfg(target_os = "windows")]
-fn set_taskbar_overlay(hicon: isize) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-        COINIT_APARTMENTTHREADED,
-    };
-    use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
-    use windows::Win32::UI::WindowsAndMessaging::HICON;
-    use windows::core::HSTRING;
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let need_uninit = hr.is_ok();
-        let created = CoCreateInstance::<_, ITaskbarList3>(
-            &TaskbarList, None, CLSCTX_INPROC_SERVER,
-        );
-        match created {
-            Ok(tbl) => {
-                if let Some(hwnd) = find_main_window() {
-                    // 0 = 摘除角标
-                    let icon = HICON(if hicon != 0 {
-                        hicon as *mut core::ffi::c_void
-                    } else {
-                        std::ptr::null_mut()
-                    });
-                    if let Err(e) = tbl.SetOverlayIcon(
-                        HWND(hwnd as _), icon, &HSTRING::from("未读"),
-                    ) {
-                        tracing::warn!("任务栏角标失败: {e}");
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("任务栏角标：ITaskbarList3 创建失败: {e}"),
-        }
-        if need_uninit {
-            let _ = CoUninitialize();
-        }
-    }
+fn load_icon_dimmed(name: &str, alpha: f32) -> Option<tray_icon::Icon> {
+    let path = icon_path(name)?;
+    let img = image::ImageReader::open(&path).ok()?.decode().ok()?;
+    let mut rgba = img.into_rgba8();
+    rgba.pixels_mut().for_each(|p| {
+        let a = p.0[3] as f32 * alpha;
+        p.0[3] = a as u8;
+    });
+    let (w, h) = (rgba.width(), rgba.height());
+    tray_icon::Icon::from_rgba(rgba.into_raw(), w, h).ok()
 }
 
 /// 启动托盘线程（常驻；图标缺失时静默降级为无托盘）
@@ -95,28 +68,13 @@ fn run_tray() {
     use tray_icon::TrayIconBuilder;
 
     let normal = load_icon("icon-normal.png");
+    // 闪烁"隐藏相位"的占位图：normal 的低透明度版——位置不塌、不消失，
+    // 也不是红点（set_visible(false) 会让相邻图标挤过来，观感差）
+    let dimmed = load_icon_dimmed("icon-normal.png", 0.35);
     let Some(normal) = normal else {
         tracing::warn!("托盘图标加载失败（icon-normal.png 解码失败或缺失），托盘不可用");
         return;
     };
-
-    // 任务栏角标 HICON：用 badge PNG 的像素自建 16x16（LoadImageW 不认 PNG）
-    // 任务栏角标 HICON：必须真实 ICO 资源（手搓 CreateIcon 的 32bpp 位图会被
-    // SetOverlayIcon 拒收 E_INVALIDARG），16x16 小图标尺寸
-    let overlay_hicon: isize = icon_path("icon-badge.ico")
-        .map(|p| {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                LoadImageW, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE,
-            };
-            let wide: Vec<u16> = p.as_os_str().to_string_lossy()
-                .encode_utf16().chain(std::iter::once(0)).collect();
-            unsafe {
-                LoadImageW(std::ptr::null_mut(), wide.as_ptr(), IMAGE_ICON,
-                           16, 16, LR_LOADFROMFILE | LR_DEFAULTSIZE) as usize as isize
-            }
-        })
-        .filter(|h| *h != 0)
-        .unwrap_or(0);
 
     let menu = Menu::new();
     let open = MenuItem::new("打开 LocalTransfer", true, None);
@@ -170,25 +128,20 @@ fn run_tray() {
         }
         if msg.message == WM_TIMER && msg.wParam == timer_id {
             let unread = BADGE.load(Ordering::Relaxed);
-            // 未读闪烁 = 图标隐藏/显示交替（不用红点图——用户要求闪隐式）
+            // 未读闪烁 = normal/dimmed 交替（占位不消失）
             if unread {
                 blink_on = !blink_on;
-                if let Err(e) = tray.set_visible(!blink_on) {
+                // dimmed 可能加载失败（缺文件等）——退回 normal，闪烁退化但不残缺
+                let icon = match (&dimmed, blink_on) {
+                    (Some(d), true) => d.clone(),
+                    _ => normal.clone(),
+                };
+                if let Err(e) = tray.set_icon(Some(icon)) {
                     tracing::warn!("托盘闪烁失败: {e:?}");
                 }
-                // 未读开始/结束：任务栏按钮挂/摘角标（持续高亮标记）
-                if tooltip_unread != unread {
-                    set_taskbar_overlay(if unread { overlay_hicon } else { 0 });
-                }
-            } else {
-                if blink_on {
-                    blink_on = false;
-                    // 确保恢复显示
-                    let _ = tray.set_visible(true);
-                }
-                if tooltip_unread != unread {
-                    set_taskbar_overlay(0);
-                }
+            } else if blink_on {
+                blink_on = false;
+                let _ = tray.set_icon(Some(normal.clone()));
             }
             if tooltip_unread != unread {
                 tooltip_unread = unread;
