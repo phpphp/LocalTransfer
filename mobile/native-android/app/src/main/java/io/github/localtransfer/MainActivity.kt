@@ -48,6 +48,7 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Chat
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -86,6 +87,12 @@ class MainActivity : ComponentActivity() {
     }
     private val pickFiles =
         registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+            if (uris.isNotEmpty()) App.sendPicked(uris)
+        }
+
+    // 系统相册选择（Photo Picker：照片/截图/视频多选，免存储权限）
+    private val pickMedia =
+        registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
             if (uris.isNotEmpty()) App.sendPicked(uris)
         }
 
@@ -171,6 +178,9 @@ class MainActivity : ComponentActivity() {
     }
 
     fun pick() = pickFiles.launch("*/*")
+    fun pickPhotos() = pickMedia.launch(
+        androidx.activity.result.PickVisualMediaRequest(
+            ActivityResultContracts.PickVisualMedia.ImageAndVideo))
     fun pickFolder() = pickFolder.launch(null)
 
     companion object {
@@ -1403,6 +1413,9 @@ fun ChatScreen(peerId: String) {
                 // 默认工具栏：四个入口一字排开；点"文本"展开消息输入
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly) {
+                    ToolEntry("图片", Icons.Rounded.Image) {
+                        activity?.pickPhotos()
+                    }
                     ToolEntry("文件", Icons.Rounded.InsertDriveFile) {
                         activity?.pick()
                     }
