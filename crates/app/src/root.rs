@@ -458,6 +458,8 @@ impl RootView {
                     Some(slot) => *slot = dev,
                     None => self.devices.push(dev),
                 }
+                // 上线设备的未读恢复计数（托盘可能重新亮起）
+                self.sync_tray_badge();
                 self.devices.sort_by(|a, b| b.last_seen_ms.cmp(&a.last_seen_ms));
                 if let Ok(s) = self.store.lock() {
                     let _ = s.upsert_peer(&id, &name);
@@ -473,6 +475,8 @@ impl RootView {
                 if let Some(d) = self.devices.iter_mut().find(|d| d.info.id == id) {
                     d.online = false;
                 }
+                // 离线设备的未读不再计入托盘（侧栏看不到、点不掉）
+                self.sync_tray_badge();
             }
             CoreEvent::Message { msg } => {
                 let peer = msg.peer_id.clone();
@@ -776,9 +780,18 @@ impl RootView {
         }
     }
 
-    /// 同步托盘未读标记（unread 汇总变化后调用）
+    /// 同步托盘未读标记（unread 汇总变化后调用）。
+    /// 只统计"看得到/点得到"的会话：在线设备 + 网页会话——
+    /// 侧栏只显示在线设备，离线设备的未读无处可点（永久清不掉），
+    /// 计入的话托盘会永远闪（用户报"没未读了还在闪"的根因）；
+    /// 设备重新上线后其未读恢复计数，点开即清
     pub fn sync_tray_badge(&self) {
-        crate::tray::set_unread(self.unread.values().sum::<usize>() > 0);
+        let web = transfer_core::proto::WEB_PEER_ID;
+        let visible_unread = self.unread.iter().any(|(id, &n)| {
+            n > 0
+                && (id == web || self.devices.iter().any(|d| &d.info.id == id && d.online))
+        });
+        crate::tray::set_unread(visible_unread);
     }
 
     /// 确认接收（overwrite=true 时同名文件直接覆盖，否则自动改名避让）
