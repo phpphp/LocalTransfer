@@ -96,6 +96,16 @@ class MainActivity : ComponentActivity() {
             if (uris.isNotEmpty()) App.sendPicked(uris)
         }
 
+    // 应用内相册（微信式网格）权限：13+ 细分媒体权限，旧版外存权限
+    private val galleryPerm =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+            if (grants.values.any { it }) {
+                App.showGallery = true
+            } else {
+                MainActivity.toast(this, "需要相册权限才能选择照片/视频")
+            }
+        }
+
     // 发送文件夹：SAF 选树 → DocumentFile 递归收集（uri → 带目录前缀的相对路径）
     private val pickFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -178,9 +188,16 @@ class MainActivity : ComponentActivity() {
     }
 
     fun pick() = pickFiles.launch("*/*")
-    fun pickPhotos() = pickMedia.launch(
-        androidx.activity.result.PickVisualMediaRequest(
-            ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+    fun pickPhotos() {
+        val perms = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 33) {
+            perms += listOf(android.Manifest.permission.READ_MEDIA_IMAGES,
+                android.Manifest.permission.READ_MEDIA_VIDEO)
+        } else {
+            perms += android.Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        galleryPerm.launch(perms.toTypedArray())
+    }
     fun pickFolder() = pickFolder.launch(null)
 
     companion object {
@@ -328,6 +345,8 @@ object App {
     private val main = Handler(Looper.getMainLooper())
 
     val peers get() = disc.peers
+    /** 应用内相册选择器（微信式网格）是否打开 */
+    var showGallery by mutableStateOf(false)
     val chats = mutableStateMapOf<String, MutableList<ChatEntry>>()
     val progress = mutableStateMapOf<String, RecvProgress>()
     /** 待确认的接收请求队列（可同时挂多个：新请求不再顶掉旧的——
@@ -656,6 +675,17 @@ fun App() {
                  else lightColorScheme(primary = IndigoDark)
     MaterialTheme(colorScheme = colors) {
         val peerId = App.currentPeer
+        if (App.showGallery) {
+            // 应用内相册选择器（微信式）：全屏覆盖，选定即发送
+            GalleryPicker(
+                onSend = { uris ->
+                    App.showGallery = false
+                    if (uris.isNotEmpty()) App.sendPicked(uris)
+                },
+                onClose = { App.showGallery = false },
+            )
+            return@MaterialTheme
+        }
         if (peerId == null) DeviceListScreen() else ChatScreen(peerId)
         // 队头请求先弹，处理完（接收/拒绝/存到）自动弹下一个
         App.pendingReqs.firstOrNull()?.let { req ->

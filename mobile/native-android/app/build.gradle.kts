@@ -71,6 +71,9 @@ dependencies {
     // 文件夹选择后的递归遍历（DocumentFile）
     implementation("androidx.documentfile:documentfile:1.0.1")
 
+    // 相册选择器的缩略图加载
+    implementation("io.coil-kt:coil-compose:2.7.0")
+
     // 二维码：生成（core）+ 扫码（embedded，内置 CaptureActivity）
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")

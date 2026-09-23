@@ -16,6 +16,11 @@
     <!-- 打开接收的 .apk 时拉起系统包安装器（Android 8+ 需此权限，
          未授权时系统会引导用户允许"安装未知应用"） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 应用内相册选择器（微信式网格）：读媒体库 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <application
         android:label="LocalTransfer"
