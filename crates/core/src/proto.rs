@@ -214,6 +214,10 @@ pub enum UiCommand {
         peer_id: String,
         text: String,
     },
+    /// 删除设备（侧栏右键/长按）：注册表移除 + 忽略后续 announce（防"删了又冒回来"）
+    RemovePeer {
+        peer_id: String,
+    },
     SendFiles {
         peer_id: String,
         paths: Vec<PathBuf>,

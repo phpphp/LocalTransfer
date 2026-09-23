@@ -25,11 +25,16 @@ use crate::proto::{
 #[derive(Default)]
 pub struct Registry {
     devices: HashMap<String, Device>,
+    /// 已删除的设备 id：跳过其 announce（否则在线设备删后 ≤10s 就"复活"）
+    ignored: std::collections::HashSet<String>,
 }
 
 impl Registry {
     /// 处理一条 announce；返回设备表示"新增/信息变更/复活"，需要通知 UI
     pub(crate) fn on_announce(&mut self, info: DeviceInfo, addr: IpAddr, now_ms: i64) -> Option<Device> {
+        if self.ignored.contains(&info.id) {
+            return None; // 用户已删除该设备
+        }
         // 同 IP 上的旧 id 幽灵（重装后的残留）：新设备认领了这个 IP，
         // 旧条目不可能再回来了，直接清掉
         self.devices
@@ -95,6 +100,13 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> Option<&Device> {
         self.devices.get(id)
+    }
+
+    /// 删除设备：注册表移除 + 进忽略表（重启后忽略失效——想重新发现重启即可）。
+    /// 返回被删设备（UI 据此发 DeviceDown 事件）
+    pub fn remove(&mut self, id: &str) -> Option<Device> {
+        self.ignored.insert(id.to_string());
+        self.devices.remove(id)
     }
 
     /// 按源 IP 刷新在线状态（对端的 HTTP 访问证明其存活）。

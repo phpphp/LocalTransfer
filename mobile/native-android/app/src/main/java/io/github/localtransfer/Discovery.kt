@@ -41,6 +41,8 @@ class Discovery(private val me: DeviceInfo, context: Context) {
     @Volatile private var sock: MulticastSocket? = null
     private val lastUnicastReply = ConcurrentHashMap<String, Long>()
     private val manualIps: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    // 已删除设备：忽略其 announce/扫描回包（在线设备删后不会马上"复活"）
+    private val removedIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private val wifi =
         context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -105,6 +107,7 @@ class Discovery(private val me: DeviceInfo, context: Context) {
             "announce" -> {
                 val info = runCatching { DeviceInfo.fromJson(j) }.getOrNull() ?: return
                 if (info.id == me.id || info.v != PROTOCOL_VERSION) return
+                if (removedIds.contains(info.id)) return
                 val manual = manualIps.contains(from.hostAddress) ||
                         _peers.value[info.id]?.manual == true
                 _peers.value = _peers.value +
@@ -177,6 +180,7 @@ class Discovery(private val me: DeviceInfo, context: Context) {
             if (info.id == me.id) return false
             val cur = _peers.value
             if (!addNew && !cur.containsKey(info.id)) return false
+            if (removedIds.contains(info.id)) return false
             val manual = manualIps.contains(ip) || cur[info.id]?.manual == true
             _peers.value = cur + (info.id to
                     Peer(info, InetAddress.getByName(ip), manual))
@@ -185,7 +189,17 @@ class Discovery(private val me: DeviceInfo, context: Context) {
     }
 
     /** 手动添加（persisted=true 时记入持久化集合） */
+    /** 删除设备：出表 + 进忽略表（重启后忽略失效）。返回其 IP（供清理手动列表） */
+    fun removePeer(id: String): String? {
+        removedIds += id
+        val p = _peers.value[id] ?: return null
+        manualIps -= p.addr.hostAddress
+        _peers.value = _peers.value - id
+        return p.addr.hostAddress
+    }
+
     fun addManual(ip: String, persisted: Boolean) {
+        removedIds.clear()  // 手动添加 = 重新发现
         manualIps += ip
         httpProbe(ip, DEFAULT_HTTP_PORT, addNew = true)
         httpProbe(ip, DEFAULT_HTTP_PORT + 1, addNew = true)

@@ -9,9 +9,12 @@
 //! - 列表行给确定高度，避免任何撑高。
 
 use gpui_kit::component::button::Button;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+
+use transfer_core::UiCommand;
 
 use crate::root::{RootView, initial_avatar};
 
@@ -340,6 +343,7 @@ impl RootView {
         let selected = self.selected.as_deref() == Some(id);
         let unread = self.unread.get(id).copied().unwrap_or(0);
         let id_for_click = id.to_string();
+        let id_for_del = id.to_string();
         let hover_bg = cx.theme().list_hover;
         let icon_color = if online {
             cx.theme().primary
@@ -426,6 +430,30 @@ impl RootView {
                                 }),
                         ),
                 )
+            })
+            // 右键删除设备（放链尾：context_menu 会把元素包成 ContextMenu<E>，
+            // 之后不能再链 on_click 等交互方法）。核心注册表移除+进忽略表
+            // （在线设备不会 10s 内"复活"），本地立即同步行消失
+            .context_menu({
+                let handle = cx.entity();
+                let del_id = id_for_del.clone();
+                move |menu, _window, _cx| {
+                    let handle = handle.clone();
+                    let del_id = del_id.clone();
+                    menu.item(
+                        PopupMenuItem::new("删除设备")
+                            .icon(IconName::Delete)
+                            .on_click(move |_ev, _window, cx| {
+                                handle.update(cx, |this, cx| {
+                                    let _ = this.core.send(UiCommand::RemovePeer {
+                                        peer_id: del_id.clone(),
+                                    });
+                                    this.devices.retain(|d| d.info.id != del_id);
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                }
             })
             .into_any_element()
     }

@@ -294,6 +294,16 @@ async fn run(
                     server::cancel_local(&state, &transfer_id);
                 }
             }
+            UiCommand::RemovePeer { peer_id } => {
+                let down = {
+                    let mut reg = registry.lock().unwrap();
+                    reg.remove(&peer_id)
+                        .map(|d| (d.info.id.clone(), d.info.name.clone()))
+                };
+                if let Some((id, name)) = down {
+                    let _ = event_tx.try_send(CoreEvent::DeviceDown { id, name });
+                }
+            }
             UiCommand::ConnectPeer { host } => {
                 handle_connect_peer(&registry, &event_tx, host);
             }

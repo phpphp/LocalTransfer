@@ -503,6 +503,21 @@ object App {
         }
     }
 
+    /** 删除设备：发现表移除+忽略（在线设备不会马上"复活"）；手动列表同步清理 */
+    fun removePeer(id: String) {
+        GlobalScope.launch(Dispatchers.IO) {
+            val ip = disc.removePeer(id)
+            main.post {
+                if (currentPeer == id) currentPeer = null
+                if (ip != null) {
+                    ctx.getSharedPreferences("lt", Context.MODE_PRIVATE)
+                        .edit().putStringSet("manual_peers",
+                            disc.manualIpsSnapshot()).apply()
+                }
+            }
+        }
+    }
+
     fun sendText(peerId: String, text: String) {
         val p = peers.value[peerId] ?: return
         chats.getOrPut(peerId) { mutableStateListOf<ChatEntry>() }
@@ -1172,9 +1187,20 @@ fun platLabel(plat: String): String = when (plat.lowercase()) {
 }
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun DeviceRow(p: Peer, onClick: () -> Unit) {
+    var confirmDel by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick)
+        Modifier.fillMaxWidth()
+            .combinedClickable(
+                interactionSource = remember {
+                    androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+                // 长按 = 删除设备（确认弹窗）
+                onLongClick = { confirmDel = true },
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1212,6 +1238,26 @@ fun DeviceRow(p: Peer, onClick: () -> Unit) {
         }
         Box(Modifier.size(8.dp).clip(CircleShape)
             .background(androidx.compose.ui.graphics.Color(0xFF22C55E)))
+    }
+    // 长按 → 删除确认（聊天记录保留；设备重启/重新上线会再出现）
+    if (confirmDel) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDel = false },
+            title = { Text("删除设备") },
+            text = { Text("从列表移除「${p.info.name}」？聊天记录保留，" +
+                    "重启应用后若设备在线会重新出现。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    App.removePeer(p.info.id)
+                    confirmDel = false
+                }) { Text("删除", color = androidx.compose.ui.graphics.Color(0xFFEF4444)) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmDel = false }) {
+                    Text("取消")
+                }
+            },
+        )
     }
 }
 
