@@ -89,8 +89,19 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // 渲染时缓存窗口激活状态（事件泵里没有 window 可查）
-        self.window_active = window.is_window_active();
+        // 渲染时缓存窗口激活状态（事件泵里没有 window 可查）；
+        // 后台→前台切换时清当前会话的后台未读（否则停在会话里收到的
+        // 后台消息的未读永远没人清，托盘闪烁停不下来）
+        let active_now = window.is_window_active();
+        if active_now && !self.window_active {
+            if let Some(peer) = self.selected.clone() {
+                if self.unread.get(&peer).copied().unwrap_or(0) > 0 {
+                    self.unread.insert(peer, 0);
+                    self.sync_tray_badge();
+                }
+            }
+        }
+        self.window_active = active_now;
 
         let Some(peer) = self.selected.clone() else {
             return self.no_peer_placeholder(cx);
