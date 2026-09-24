@@ -62,52 +62,63 @@ fun GalleryPicker(onSend: (List<Uri>) -> Unit, onClose: () -> Unit) {
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val list = mutableListOf<MediaItem>()
-            val proj = arrayOf(
-                MediaStore.MediaColumns._ID,
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
-                MediaStore.MediaColumns.DATE_MODIFIED,
-                MediaStore.MediaColumns.DURATION,
-            )
-            // 图片
-            ctx.contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj,
-                null, null,
-                "${MediaStore.MediaColumns.DATE_MODIFIED} DESC")?.use { c ->
-                val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val albumCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-                val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
-                while (c.moveToNext()) {
-                    list.add(MediaItem(
-                        ContentUris.withAppendedId(
-                            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(idCol)),
-                        c.getString(nameCol) ?: "",
-                        c.getString(albumCol) ?: "图片",
-                        false, 0, c.getLong(dateCol)))
+            // 图片（注意：images 表没有 duration 列——部分系统查了直接崩，
+            // 模拟器实测 SQLiteException no such column: duration）
+            runCatching {
+                ctx.contentResolver.query(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    arrayOf(
+                        MediaStore.MediaColumns._ID,
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+                        MediaStore.MediaColumns.DATE_MODIFIED,
+                    ),
+                    null, null,
+                    "${MediaStore.MediaColumns.DATE_MODIFIED} DESC")?.use { c ->
+                    val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val albumCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                    val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+                    while (c.moveToNext()) {
+                        list.add(MediaItem(
+                            ContentUris.withAppendedId(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(idCol)),
+                            c.getString(nameCol) ?: "",
+                            c.getString(albumCol) ?: "图片",
+                            false, 0, c.getLong(dateCol)))
+                    }
                 }
-            }
-            // 视频
-            ctx.contentResolver.query(
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI, proj,
-                null, null,
-                "${MediaStore.MediaColumns.DATE_MODIFIED} DESC")?.use { c ->
-                val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val albumCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-                val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
-                val durCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)
-                while (c.moveToNext()) {
-                    list.add(MediaItem(
-                        ContentUris.withAppendedId(
-                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(idCol)),
-                        c.getString(nameCol) ?: "",
-                        c.getString(albumCol) ?: "视频",
-                        true, c.getLong(durCol), c.getLong(dateCol)))
+            }.onFailure { android.util.Log.w("LT", "图片库读取失败", it) }
+            // 视频（duration 只有视频表有）
+            runCatching {
+                ctx.contentResolver.query(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    arrayOf(
+                        MediaStore.MediaColumns._ID,
+                        MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+                        MediaStore.MediaColumns.DATE_MODIFIED,
+                        MediaStore.MediaColumns.DURATION,
+                    ),
+                    null, null,
+                    "${MediaStore.MediaColumns.DATE_MODIFIED} DESC")?.use { c ->
+                    val idCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val albumCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                    val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+                    val durCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DURATION)
+                    while (c.moveToNext()) {
+                        list.add(MediaItem(
+                            ContentUris.withAppendedId(
+                                MediaStore.Video.Media.EXTERNAL_CONTENT_URI, c.getLong(idCol)),
+                            c.getString(nameCol) ?: "",
+                            c.getString(albumCol) ?: "视频",
+                            true, c.getLong(durCol), c.getLong(dateCol)))
+                    }
                 }
-            }
+            }.onFailure { android.util.Log.w("LT", "视频库读取失败", it) }
             list.sortByDescending { it.dateTaken }
-            all = list
+            withContext(kotlinx.coroutines.Dispatchers.Main) { all = list }
         }
     }
 
