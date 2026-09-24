@@ -518,9 +518,16 @@ impl RootView {
                 files,
             } => {
                 if !crate::tray::is_foreground() {
+                    let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+                    let body = match names.len() {
+                        0 => String::new(),
+                        1 => names[0].to_string(),
+                        n if n <= 3 => names.join("、"),
+                        n => format!("{} 等 {n} 个文件", names[..3].join("、")),
+                    };
                     desktop_notify(
                         &format!("{} 想发送文件", peer.info.name),
-                        &format!("{} 个文件 · 点击处理", files.len()),
+                        &format!("{body}（共 {} 个）", files.len()),
                     );
                     crate::tray::flash_taskbar();
                     self.sync_tray_badge();   // 请求卡也点亮托盘红点

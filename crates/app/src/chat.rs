@@ -623,7 +623,62 @@ impl RootView {
                                                         self.me.download_dir.display()
                                                     )),
                                             ),
-                                    ),
+                                    )
+                                    // 文件清单（对端发的是什么一眼可见）
+                                    .child(
+                                        v_flex()
+                                            .w_full()
+                                            .min_w_0()
+                                            .gap_0p5()
+                                            .children(
+                                                req.files.iter().take(3).map(|f| {
+                                                    h_flex()
+                                                        .id(SharedString::from(format!(
+                                                            "reqf-{}-{name}", req.req_id, name = f.name
+                                                        )))
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .gap_1p5()
+                                                        .child(
+                                                            Icon::new(IconName::FileText)
+                                                                .with_size(px(13.))
+                                                                .flex_none()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .truncate()
+                                                                .text_xs()
+                                                                .child(f.name.clone()),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_none()
+                                                                .text_xs()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(fmt_size(f.size)),
+                                                        )
+                                                }),
+                                            )
+                                            .when(req.files.len() > 3, |el| {
+                                                el.child(
+                                                    div()
+                                                        .w_full()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(format!(
+                                                            "… 共 {} 个文件",
+                                                            req.files.len()
+                                                        )),
+                                                )
+                                            }),
+                                    )
                             )
                             .child(
                                 h_flex()
