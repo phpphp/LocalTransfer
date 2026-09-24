@@ -75,6 +75,18 @@ fn saved_path_of(msg: &transfer_core::ChatMessage) -> Option<PathBuf> {
     }
 }
 
+/// 图片扩展名（气泡按缩略图渲染——微信式）
+pub(crate) fn is_image_name(name: &str) -> bool {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "heif" | "ico")
+}
+
+/// 视频扩展名（卡片带大播放图标的展示）
+pub(crate) fn is_video_name(name: &str) -> bool {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "mp4" | "mov" | "mkv" | "webm" | "avi" | "3gp" | "m4v")
+}
+
 /// 纯文本 → TextView 的 HTML（转义 + 换行；HTML 格式避免 Markdown 误解析 *_# 等字符）
 fn text_to_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -1126,6 +1138,38 @@ impl RootView {
             }
         }
         let done = progress.map(|p| p.2).unwrap_or(saved_path.is_some());
+
+        // 图片（微信式）：文件已落地 → 缩略图气泡；传输中 → 底图占位+进度环
+        if is_image_name(name) {
+            if let Some(path) = saved_path.clone().filter(|p| p.exists()) {
+                let open = transfer_open_target(&self.transfers, transfer_id, file_id)
+                    .unwrap_or_else(|| path.clone());
+                return div()
+                    .id(SharedString::from(format!("img-{}", name)))
+                    .w(px(200.))
+                    .h(px(150.))
+                    .flex_none()
+                    .rounded_xl()
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .hover(|s| s.opacity(0.9))
+                    .child(
+                        gpui::img(path.as_path())
+                            .object_fit(gpui::ObjectFit::Cover)
+                            .size_full(),
+                    )
+                    .on_click({
+                        let open = open.clone();
+                        cx.listener(move |_this, _ev, _window, cx| {
+                            let url = format!(
+                                "file:///{}",
+                                open.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"));
+                            let _ = cx.open_url(&url);
+                        })
+                    })
+                    .into_any_element();
+            }
+        }
 
         // 元素 id 必须全列表唯一：同一文件多次传输会出多张同名卡片，
         // 按文件名拼 id 会冲突（同名 id 的交互元素只有第一个能点）——

@@ -49,6 +49,7 @@ import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Chat
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -1652,6 +1653,60 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                         }
                     // 文件卡只展示，不可点击（用户明确要求）
                     is ChatEntry.FileCard -> Column {
+                        // 微信式：单文件图片 → 缩略图直出（点击打开走外层卡片逻辑）
+                        if (e.files.size == 1) {
+                            val f = e.files[0]
+                            val isImg = listOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic")
+                                .contains(f.name.substringAfterLast('.', "").lowercase())
+                            val isVid = listOf("mp4", "mov", "mkv", "webm", "3gp", "m4v")
+                                .contains(f.name.substringAfterLast('.', "").lowercase())
+                            if ((isImg || isVid) && f.path != null) {
+                                val file = java.io.File(f.path)
+                                if (file.exists()) {
+                                    if (isImg) {
+                                        coil.compose.AsyncImage(
+                                            model = f.path,
+                                            contentDescription = f.name,
+                                            modifier = Modifier
+                                                .widthIn(max = 220.dp)
+                                                .heightIn(max = 280.dp)
+                                                .clip(RoundedCornerShape(10.dp)),
+                                            contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+                                        )
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(fmtSize(e.size), fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        return@Column
+                                    } else {
+                                        // 视频：渐变底 + 大播放图标的卡片
+                                        Box(Modifier
+                                            .width(200.dp).height(130.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                                    listOf(
+                                                        androidx.compose.ui.graphics.Color(0xFF1E293B),
+                                                        androidx.compose.ui.graphics.Color(0xFF334155)))),
+                                            contentAlignment = Alignment.Center) {
+                                            Icon(androidx.compose.material.icons.Icons.Rounded.PlayArrow, "视频",
+                                                modifier = Modifier.size(44.dp),
+                                                tint = androidx.compose.ui.graphics.Color.White)
+                                            Text("▶ ${f.name.take(20)}",
+                                                fontSize = 10.sp,
+                                                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f),
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomStart)
+                                                    .padding(8.dp),
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(fmtSize(e.size), fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        return@Column
+                                    }
+                                }
+                            }
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(if (e.files.size > 1 || e.files.isEmpty()) "📁" else "📄",
                                 fontSize = 18.sp)
