@@ -61,6 +61,13 @@ fn transfer_of(msg: &transfer_core::ChatMessage) -> Option<&str> {
     }
 }
 
+fn file_name_of(msg: &transfer_core::ChatMessage) -> String {
+    match &msg.kind {
+        MessageKind::File { name, .. } => name.clone(),
+        _ => String::new(),
+    }
+}
+
 fn file_size_of(msg: &transfer_core::ChatMessage) -> u64 {
     match &msg.kind {
         MessageKind::File { size, .. } => *size,
@@ -963,6 +970,55 @@ impl RootView {
                                     .child(format!("{} · {files_done}/{count} 已完成", fmt_size(total))),
                             ),
                     ),
+            )
+            // 文件清单（微信式：批内文件名可见，超过 3 个折叠为"N 个文件"提示行）
+            .child(
+                v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_1()
+                    .children(
+                        msgs.iter()
+                            .take(3)
+                            .map(|m| {
+                                let (name, size) = (file_name_of(m), file_size_of(m));
+                                h_flex()
+                                    .id(SharedString::from(format!("bf-{}-{name}", m.id)))
+                                    .w_full()
+                                    .min_w_0()
+                                    .gap_1p5()
+                                    .child(
+                                        Icon::new(IconName::FileText)
+                                        .with_size(px(14.))
+                                        .flex_none()
+                                        .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(fmt_size(size)),
+                                    )
+                            }),
+                    )
+                    .when(count > 3, |el| {
+                        el.child(
+                            div()
+                                .w_full()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("… 共 {count} 个文件，右键打开目录查看全部")),
+                        )
+                    }),
             );
 
         let card = match &err {

@@ -72,6 +72,17 @@ pub(crate) fn transfer_open_target(
     )
 }
 
+/// 通知正文：列出文件名（1 个=名字；≤3 个=顿号连接；更多=前 3 个+等 N 个）
+fn files_summary(files: &[TransferFile]) -> String {
+    let names: Vec<&str> = files.iter().map(|f| f.meta.name.as_str()).collect();
+    match names.len() {
+        0 => String::new(),
+        1 => names[0].to_string(),
+        n if n <= 3 => names.join("、"),
+        n => format!("{} 等 {n} 个文件", names[..3].join("、")),
+    }
+}
+
 /// 一次传输的显示名（文件夹名 / "N 个文件"，规则与测试在 transfer-core）
 pub(crate) fn transfer_display_name(files: &[TransferFile]) -> String {
     let rels: Vec<&str> = files.iter().map(|f| f.meta.rel_path.as_str()).collect();
@@ -666,9 +677,9 @@ impl RootView {
                                 f.transferred = f.meta.size;
                             }
                         }
-                        // 接收完成 → 后台时弹系统通知 + 任务栏闪烁
+                        // 接收完成 → 后台时弹系统通知 + 任务栏闪烁（正文列文件名）
                         if !crate::tray::is_foreground() {
-                            let what = crate::root::transfer_display_name(&t.files);
+                            let what = files_summary(&t.files);
                             let peer_id = t.peer_id.clone();
                             let name = self.peer_name(&peer_id);
                             desktop_notify(&format!("已接收 · {name}"), &what);

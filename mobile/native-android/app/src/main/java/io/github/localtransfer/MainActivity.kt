@@ -482,7 +482,12 @@ object App {
                     System.currentTimeMillis(), finalLocation, files))
                 // "存到…"的临时目录只管本批，收完恢复默认（位置已先取出）
                 server.customSaveDir = defaultSaveDir
-                notify("已接收 $title", "保存在 $finalLocation")
+                val names = when (files.size) {
+                    1 -> files[0].name
+                    in 2..3 -> files.joinToString("、") { it.name }
+                    else -> files.take(3).joinToString("、") { it.name } + " 等 ${files.size} 个文件"
+                }
+                notify("已接收 $title", names)
             }
         })
         me = me.copy(port = server.start(DEFAULT_HTTP_PORT))
@@ -1715,6 +1720,20 @@ fun MessageBubble(e: ChatEntry, onDelete: (ChatEntry) -> Unit) {
                                 fontWeight = FontWeight.Medium,
                                 color = if (end) androidx.compose.ui.graphics.Color.White
                                 else MaterialTheme.colorScheme.onSurface)
+                        }
+                        // 文件清单（微信式：批内文件名可见，≤4 行+折叠）
+                        if (e.files.size > 1) {
+                            e.files.take(4).forEach { f ->
+                                Text("· ${f.name}", fontSize = 11.sp, maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (end) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (e.files.size > 4) {
+                                Text("… 共 ${e.files.size} 个文件", fontSize = 11.sp,
+                                    color = if (end) androidx.compose.ui.graphics.Color.White.copy(alpha = 0.6f)
+                                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                         e.location?.let {
                             Text(it, fontSize = 10.sp, color =
