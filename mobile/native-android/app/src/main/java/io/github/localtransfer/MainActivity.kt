@@ -455,8 +455,13 @@ object App {
                 notify(peerName, text.take(40))
             }
             override fun onIncoming(req: IncomingReq) {
-                notify("${req.peer.name} 想发送文件",
-                    "${req.files.size} 个文件 · 点击处理")
+                val names = when (req.files.size) {
+                    1 -> req.files[0].name
+                    in 2..3 -> req.files.joinToString("、") { it.name }
+                    else -> req.files.take(3).joinToString("、") { it.name } +
+                            " 等 ${req.files.size} 个文件"
+                }
+                notify("${req.peer.name} 想发送文件", names)
                 if (autoReceive) {
                     req.decision.complete(true)   // 静默接收，不弹窗不 Toast
                 } else {
@@ -767,7 +772,19 @@ fun App() {
                                     color = MaterialTheme.colorScheme.primary)
                             }
                         }
-                        Spacer(Modifier.height(18.dp))
+                        // 文件清单：对方发的是什么一眼可见（前 4 个+折叠）
+                        Spacer(Modifier.height(8.dp))
+                        req.files.take(4).forEach { f ->
+                            Text("· ${f.name}（${fmtSize(f.size)}）",
+                                fontSize = 11.sp, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (req.files.size > 4) {
+                            Text("… 共 ${req.files.size} 个文件", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.height(14.dp))
                         // 拒绝 / 接收
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
