@@ -56,6 +56,12 @@ fn main() {
     // 若在此主动 drop 会立刻释放锁，第 2 个实例就能拿到同一把锁（bug）。
     let (instance_lock, instance_no) = transfer_core::acquire_instance_lock();
     std::mem::forget(instance_lock);
+    // 单实例：已有实例在跑时，第二次启动拉起既有窗口并退出
+    // （--name/--port 调试参数仍允许多开，方便同机联调）
+    if instance_no > 1 && name_override.is_none() && port_override.is_none() {
+        crate::tray::activate_existing_instance();
+        return;
+    }
     let ephemeral = instance_no > 1 || name_override.is_some() || port_override.is_some();
     if let Some(n) = &name_override {
         config.device_name = n.clone();

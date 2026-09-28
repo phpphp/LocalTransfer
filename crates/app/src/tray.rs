@@ -240,6 +240,55 @@ fn find_main_window() -> Option<isize> {
     ctx.found
 }
 
+/// 单实例二次启动：找到既有实例的主窗口（任意进程）并前置，然后本进程退出。
+/// find_main_window 只搜本进程，这里要跨进程按标题找。
+#[cfg(target_os = "windows")]
+pub fn activate_existing_instance() {
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
+        SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+
+    struct Found {
+        hwnd: Option<isize>,
+    }
+    unsafe extern "system" fn proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &mut *(lparam as *mut Found);
+            if IsWindowVisible(hwnd) == 0 {
+                return 1;
+            }
+            let len = GetWindowTextLengthW(hwnd);
+            if len <= 0 {
+                return 1;
+            }
+            let mut buf = vec![0u16; len as usize + 1];
+            let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+            if title == "LocalTransfer" {
+                ctx.hwnd = Some(hwnd as isize);
+                return 0;
+            }
+            1
+        }
+    }
+
+    let mut found = Found { hwnd: None };
+    unsafe {
+        EnumWindows(Some(proc), &mut found as *mut Found as LPARAM);
+        if let Some(h) = found.hwnd {
+            ShowWindow(h as _, SW_SHOW);
+            ShowWindow(h as _, SW_RESTORE);
+            SetForegroundWindow(h as _);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn activate_existing_instance() {}
+
 /// 恢复并前置主窗口（托盘点击）
 #[cfg(target_os = "windows")]
 pub fn show_main_window() {
