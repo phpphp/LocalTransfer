@@ -22,9 +22,10 @@ $dst = "dist\LocalTransfer-0.2.0-x86_64-unknown-linux-gnu"
 New-Item -ItemType Directory -Force $dst | Out-Null
 & wsl -d Ubuntu-24.04 -u root -- bash -c "strip /root/localtransfer/target/release/local-transfer && cp /root/localtransfer/target/release/local-transfer /mnt/c/Users/song/AI/claudeCode/LocalTransfer/dist/LocalTransfer-0.2.0-x86_64-unknown-linux-gnu/"
 if ($LASTEXITCODE -ne 0) { Write-Output "COPY FAILED"; exit 1 }
-Copy-Item assets/README.txt $dst -Force
+Copy-Item assets/README-linux.txt "$dst/README.txt" -Force
 Copy-Item assets/icon.png $dst -Force
 Copy-Item assets/localtransfer.desktop $dst -Force
-tar czf "$dst.tar.gz" $dst
+# -C dist：压缩包根直接是版本目录（不带 dist/ 前缀）
+tar czf "$dst.tar.gz" -C dist "LocalTransfer-0.2.0-x86_64-unknown-linux-gnu"
 Get-Item "$dst.tar.gz" | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 Write-Output "== done =="
