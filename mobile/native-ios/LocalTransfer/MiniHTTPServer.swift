@@ -133,7 +133,7 @@ final class MiniHTTPServer {
             }
             let rest = buf[headerEnd.upperBound...]
             let reader = BodyReader(conn: conn, buffer: rest,
-                                    length: Int(headers["content-length"] ?? "0") ?? 0)
+                                    length: Int64(headers["content-length"] ?? "0") ?? 0)
             done(reqLine[0], reqLine[1], headers, reader)
         }
     }
@@ -142,10 +142,10 @@ final class MiniHTTPServer {
     final class BodyReader {
         private let conn: NWConnection
         private var buffer: Data
-        let length: Int
+        let length: Int64
         private var consumed = 0
 
-        init(conn: NWConnection, buffer: Data, length: Int) {
+        init(conn: NWConnection, buffer: Data, length: Int64) {
             self.conn = conn; self.buffer = buffer; self.length = length
         }
 
@@ -155,7 +155,7 @@ final class MiniHTTPServer {
                 done(buffer.prefix(length)); consumed = length; return
             }
             conn.receive(minimumIncompleteLength: 1,
-                         maximumLength: length - buffer.count) { [weak self] data, _, _, err in
+                         maximumLength: Int(length) - buffer.count) { [weak self] data, _, _, err in
                 guard let d = data, err == nil else { done(nil); return }
                 self?.buffer += d
                 self?.readAll(done)
@@ -302,7 +302,8 @@ final class MiniHTTPServer {
             try? handle?.close()
             semaphore.signal()
         }
-        _ = semaphore.wait(timeout: .now() + 60)
+        // 大文件（16GB 慢网可传几十分钟）——60s 会掐死写盘等待，24h 兜底
+        _ = semaphore.wait(timeout: .now() + 24 * 3600)
 
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0

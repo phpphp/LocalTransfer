@@ -69,7 +69,8 @@ class TransferApi(private val me: DeviceInfo) {
             conn.requestMethod = "PUT"
             conn.doOutput = true
             conn.connectTimeout = 5000
-            conn.readTimeout = 10 * 60_000
+            // 大文件慢网（16GB 可能传几十分钟）——10 分钟读超时会中途掐死，24h 兜底
+            conn.readTimeout = 24 * 60 * 60_000
             conn.setRequestProperty("Content-Type", "application/octet-stream")
             conn.setFixedLengthStreamingMode(total)
             val out: OutputStream = conn.outputStream   // 先拿流（建立连接）

@@ -154,7 +154,9 @@ async fn send_files_inner(
     let client = reqwest::Client::builder()
         // 局域网直连：绝不吃系统代理
         .no_proxy()
-        .timeout(std::time::Duration::from_secs(600)) // 单文件上传上限；空闲时由 body 驱动
+        // 大文件慢网（16GB @ 20MB/s ≈ 14 分钟）下固定 600s 会中途掐死传输；
+        // 改 24h 上限，卡死场景由用户取消按钮处理
+        .timeout(std::time::Duration::from_secs(24 * 3600))
         .local_address(lan_bind_addr(base))
         .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;
