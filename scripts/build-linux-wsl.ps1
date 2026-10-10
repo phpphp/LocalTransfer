@@ -1,4 +1,4 @@
-﻿# 在 WSL Ubuntu-24.04 里本机构建 Linux x64 包（产物放 dist\）。
+﻿﻿# 在 WSL Ubuntu-24.04 里本机构建 Linux x64 包（产物放 dist\）。
 # 首次运行会装系统依赖与 Rust（清华镜像）；源码每次重新拷入 WSL（快）。
 # 用法: powershell -ExecutionPolicy Bypass -File scripts\build-linux-wsl.ps1
 $ErrorActionPreference = "Stop"
@@ -18,9 +18,9 @@ Write-Output "== 3/4 拷源码 + 构建 =="
 if ($LASTEXITCODE -ne 0) { Write-Output "BUILD FAILED"; exit 1 }
 
 Write-Output "== 4/4 打包到 dist\ =="
-$dst = "dist\LocalTransfer-0.1.0-x86_64-unknown-linux-gnu"
+$dst = "dist\LocalTransfer-0.2.0-x86_64-unknown-linux-gnu"
 New-Item -ItemType Directory -Force $dst | Out-Null
-& wsl -d Ubuntu-24.04 -u root -- bash -c "strip /root/localtransfer/target/release/local-transfer && cp /root/localtransfer/target/release/local-transfer /mnt/c/Users/song/AI/claudeCode/LocalTransfer/dist/LocalTransfer-0.1.0-x86_64-unknown-linux-gnu/"
+& wsl -d Ubuntu-24.04 -u root -- bash -c "strip /root/localtransfer/target/release/local-transfer && cp /root/localtransfer/target/release/local-transfer /mnt/c/Users/song/AI/claudeCode/LocalTransfer/dist/LocalTransfer-0.2.0-x86_64-unknown-linux-gnu/"
 if ($LASTEXITCODE -ne 0) { Write-Output "COPY FAILED"; exit 1 }
 Copy-Item assets/README.txt $dst -Force
 Copy-Item assets/icon.png $dst -Force
