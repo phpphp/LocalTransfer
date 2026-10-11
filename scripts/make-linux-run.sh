@@ -6,7 +6,6 @@ set -e
 cd "$(dirname "$0")/.."
 
 VERSION=$(grep -m1 '^version = "' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-STAMP=$(date '+%Y-%m-%d %H:%M')
 DIR="LocalTransfer-$VERSION-x86_64-unknown-linux-gnu"
 SRC="dist/$DIR"
 [ -f "$SRC/local-transfer" ] || { echo "缺 $SRC/local-transfer —— 先跑 scripts/build-linux-wsl.ps1"; exit 1; }
@@ -26,9 +25,8 @@ cat <<HEAD
 # 安装位置：/usr/local/bin/local-transfer（需要 sudo 密码）
 set -e
 VERSION="$VERSION"
-STAMP="$STAMP"
 
-echo "== LocalTransfer v\$VERSION（构建 \$STAMP）安装 =="
+echo "== LocalTransfer v\$VERSION 安装 =="
 if [ "\$(id -u)" != "0" ]; then
   echo "需要 root 权限（安装到 /usr/local），将请求 sudo…"
   exec sudo bash "\$0" "\$@"
@@ -65,7 +63,6 @@ update-desktop-database /usr/local/share/applications 2>/dev/null || true
 
 rm -rf "\$TMPD"
 echo "== 安装完成 =="
-echo "  版本：v\$VERSION（\$STAMP 构建）"
 echo "  程序：/usr/local/bin/local-transfer（终端直接运行 local-transfer）"
 echo "  菜单：应用列表 → 网络 → LocalTransfer"
 echo ""
