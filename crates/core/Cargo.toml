@@ -26,3 +26,9 @@ tracing-appender = { workspace = true }
 http-body-util = "0.1"
 zip = { version = "2", default-features = false }
 http-body = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+] }

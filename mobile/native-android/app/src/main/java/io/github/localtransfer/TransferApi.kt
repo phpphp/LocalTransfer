@@ -110,6 +110,37 @@ class TransferApi(private val me: DeviceInfo) {
             readTimeout = (PREPARE_TIMEOUT_MS + 5000).toInt()
             setRequestProperty("Content-Type", "application/json")
         }
+    /** 默认网关（/proc/net/route 的 gateway 列，十六进制小端） */
+    fun defaultGateway(): String? = runCatching {
+        val ws = Regex("\\s+")
+        java.io.File("/proc/net/route").readLines()
+            .drop(1)
+            .filter { it.trim().isNotEmpty() }
+            .firstOrNull { line -> ws.split(line.trim()).let {
+                it.size > 2 && it[1] == "00000000" && it[2] != "00000000"
+            } }
+            ?.trim()?.let { ws.split(it).get(2) }
+            ?.let { hex ->
+                // 小端十六进制 → 点分十进制
+                val ip = hex.padStart(8, '0')
+                "${ip.substring(6,8).toInt(16)}.${ip.substring(4,6).toInt(16)}." +
+                "${ip.substring(2,4).toInt(16)}.${ip.substring(0,2).toInt(16)}"
+            }
+    }.getOrNull()
+
+    /** 网关 ping 链路质量：平均延迟 ms / 丢包%（用系统 ping） */
+    fun gatewayPing(gw: String): Pair<Double, Double>? = runCatching {
+        val p = ProcessBuilder("ping", "-c", "15", "-i", "0.2", gw)
+            .redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().readText()
+        p.waitFor()
+        // rtt min/avg/max/mdev = 1.2/3.4/... ms
+        val avg = Regex("= [\\d.]+/([\\d.]+)/").find(out)?.groupValues?.get(1)?.toDoubleOrNull()
+        // 15 packets transmitted, 15 received, 0% packet loss
+        val loss = Regex("(\\d+)% packet loss").find(out)?.groupValues?.get(1)?.toDoubleOrNull()
+        if (avg == null || loss == null) null else avg to loss
+    }.getOrNull()
+
     /** 与对端测速：上行 POST 8MB + 下行 GET 8MB，返回 (上行 MB/s, 下行 MB/s) */
     fun speedTest(peer: Peer): Pair<Double, Double>? {
         val n = 8L * 1024 * 1024

@@ -125,3 +125,138 @@ mod tests {
         assert!(!is_virtual_iface("Realtek PCIe GbE"));
     }
 }
+
+// ---------------------------------------------------------------- 网关链路诊断
+
+/// ICMP ping 统计（判断速度慢在哪：无线信号差=网关延迟高/丢包）
+#[derive(Debug, Clone)]
+pub struct PingStats {
+    pub sent: u32,
+    pub received: u32,
+    /// 平均往返延迟 ms
+    pub avg_ms: f64,
+    /// 相邻延迟差的平均（抖动）ms
+    pub jitter_ms: f64,
+    /// 丢包率 0.0~1.0
+    pub loss: f64,
+}
+
+/// 默认网关 IPv4（取路由表 0.0.0.0/0 中 metric 最小的下一跳）。
+/// 非 Windows 或取不到返回 None。
+#[cfg(target_os = "windows")]
+pub fn default_gateway_v4() -> Option<std::net::Ipv4Addr> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetIpForwardTable, MIB_IPFORWARDTABLE,
+    };
+    unsafe {
+        let mut size: u32 = 0;
+        let _ = GetIpForwardTable(std::ptr::null_mut(), &mut size, 0);
+        if size == 0 || size > 1 << 20 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        let table = buf.as_mut_ptr() as *mut MIB_IPFORWARDTABLE;
+        if GetIpForwardTable(table, &mut size, 0) != 0 {
+            return None;
+        }
+        let n = (*table).dwNumEntries as usize;
+        let rows = (*table).table.as_ptr();
+        let mut best: Option<(u32, u32)> = None; // (metric, 网关)
+        for i in 0..n {
+            let r = &*rows.add(i);
+            if r.dwForwardDest == 0 && r.dwForwardMask == 0 {
+                let hop = u32::from_be(r.dwForwardNextHop);
+                let gw = std::net::Ipv4Addr::from(hop);
+                // 0.0.0.0（按接口路由）不算
+                if gw.is_unspecified() {
+                    continue;
+                }
+                if best.is_none_or(|(m, _)| r.dwForwardMetric1 < m) {
+                    best = Some((r.dwForwardMetric1, hop));
+                }
+            }
+        }
+        best.map(|(_, hop)| std::net::Ipv4Addr::from(hop))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn default_gateway_v4() -> Option<std::net::Ipv4Addr> {
+    None
+}
+
+/// ICMP ping（IcmpSendEcho，无需管理员）。返回 None = 平台不支持/无法创建句柄。
+#[cfg(target_os = "windows")]
+pub fn icmp_ping(host: std::net::Ipv4Addr, count: u32) -> Option<PingStats> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        IcmpCreateFile, IcmpSendEcho, ICMP_ECHO_REPLY,
+    };
+    const TIMEOUT_MS: u32 = 1500;
+    let handle: HANDLE = unsafe { IcmpCreateFile() };
+    if handle.is_null() {
+        return None;
+    }
+    // IcmpSendEcho 的 destinationaddress 要求"网络字节序的 u32"——
+    // 即内存布局为 [a,b,c,d]；小端机上需 u32::from(ip).to_be()（实测直传丢包 100%）
+    let dest = u32::from(host).to_be();
+    let payload = [0x61u8; 16]; // "a" x16
+    let mut rtts: Vec<f64> = Vec::with_capacity(count as usize);
+    let mut received: u32 = 0;
+    for _ in 0..count {
+        let mut reply: ICMP_ECHO_REPLY = unsafe { std::mem::zeroed() };
+        let reply_size = std::mem::size_of::<ICMP_ECHO_REPLY>() as u32 + payload.len() as u32 + 8;
+        let mut reply_buf = vec![0u8; reply_size as usize];
+        let t0 = std::time::Instant::now();
+        let n = unsafe {
+            IcmpSendEcho(
+                handle,
+                dest,
+                payload.as_ptr() as *const _,
+                payload.len() as u16,
+                std::ptr::null(),
+                reply_buf.as_mut_ptr() as *mut _,
+                reply_size,
+                TIMEOUT_MS,
+            )
+        };
+        let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+        if n >= 1 {
+            reply = unsafe { *(reply_buf.as_ptr() as *const ICMP_ECHO_REPLY) };
+            if reply.Status == 0 {
+                received += 1;
+                rtts.push(elapsed);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+    unsafe {
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+    }
+    let (avg, jitter) = if rtts.is_empty() {
+        (f64::NAN, f64::NAN)
+    } else {
+        let avg = rtts.iter().sum::<f64>() / rtts.len() as f64;
+        let jit = if rtts.len() >= 2 {
+            rtts.windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .sum::<f64>()
+                / (rtts.len() - 1) as f64
+        } else {
+            0.0
+        };
+        (avg, jit)
+    };
+    Some(PingStats {
+        sent: count,
+        received,
+        avg_ms: avg,
+        jitter_ms: jitter,
+        loss: 1.0 - received as f64 / count as f64,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn icmp_ping(_host: std::net::Ipv4Addr, _count: u32) -> Option<PingStats> {
+    None
+}

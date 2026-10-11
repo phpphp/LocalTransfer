@@ -226,18 +226,57 @@ impl RootView {
         let name = dev.info.name.clone();
         self.toast(format!("正在与 {name} 测速…"), false);
         cx.spawn(async move |this, cx| {
-            match smol::unblock(move || transfer_core::client::speedtest_blocking(&base)).await
-            {
-                Ok((up, down)) => {
+            // 对端传输 + 网关链路并行测
+            let updown = smol::unblock(move || transfer_core::client::speedtest_blocking(&base));
+            let gw = smol::unblock(|| {
+                let g = transfer_core::net::default_gateway_v4()?;
+                let p = transfer_core::net::icmp_ping(g, 15)?;
+                Some((g, p))
+            });
+            let updown = updown.await;
+            let gw = gw.await;
+            let _ = &this;
+            match (updown, gw) {
+                (Ok((up, down)), Some((g, p))) => {
+                    // 慢点判断：网关差=本机无线问题；网关好+对端慢=对端无线/远端
+                    let gw_bad = p.loss > 0.10 || p.avg_ms > 30.0 || p.jitter_ms > 15.0;
+                    let peer_slow = up < 5.0 || down < 5.0;
+                    let diag = if gw_bad {
+                        "→ 本机到网关链路差（无线信号弱/干扰）：先靠近路由器或换 5G 频段"
+                    } else if peer_slow {
+                        "→ 本机链路正常，慢在对端（对方无线信号/网卡）或跨网段"
+                    } else {
+                        "→ 链路正常"
+                    };
+                    let ms = if p.avg_ms.is_nan() {
+                        "—".to_string()
+                    } else {
+                        format!("{:.0}", p.avg_ms)
+                    };
                     let _ = this.update(cx, |this, cx| {
                         this.toast(
-                            format!("{name}：↑ {up:.1} MB/s　↓ {down:.1} MB/s"),
+                            format!(
+                                "{name}：↑ {up:.1} ↓ {down:.1} MB/s
+网关 {g}：{ms}ms 抖动 {:.0}ms 丢包 {:.0}%
+{diag}",
+                                p.jitter_ms,
+                                p.loss * 100.0,
+                            ),
                             false,
                         );
                         cx.notify();
                     });
                 }
-                Err(_) => {
+                (Ok((up, down)), None) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.toast(
+                            format!("{name}：↑ {up:.1} MB/s　↓ {down:.1} MB/s（网关不可测）"),
+                            false,
+                        );
+                        cx.notify();
+                    });
+                }
+                (Err(_), _) => {
                     let _ = this.update(cx, |this, cx| {
                         this.toast("测速失败（对方不在线或版本过旧）".to_string(), true);
                         cx.notify();
@@ -389,19 +428,15 @@ impl RootView {
                         })),
                 )
             })
-            // 测速按钮（仅设备会话）：上行/下行各测 16MB，toast 出结果
+            // 测速按钮（仅设备会话）：对端传输速度 + 网关链路质量
             .when(!is_web, |el| {
                 el.child(
-                    div()
-                        .id("hdr-speedtest")
+                    Button::new("hdr-speedtest")
+                        .label("测速")
+                        .ghost()
+                        .xsmall()
                         .flex_none()
-                        .flex()
-                        .items_center()
                         .mr_2()
-                        .cursor_pointer()
-                        .text_color(cx.theme().muted_foreground)
-                        .hover(|s| s.text_color(cx.theme().primary))
-                        .child(Icon::new(IconName::ChartPie).with_size(px(14.)))
                         .on_click({
                             let peer = peer_id.to_string();
                             cx.listener(move |this, _ev, _window, cx| {
@@ -410,17 +445,32 @@ impl RootView {
                         }),
                 )
             })
-            // 普通设备：地址文字（最右，点击复制）
+            // 普通设备：地址胶囊（浅底圆角 + 图标 + 等宽字，点击复制）
             .when(!is_web, |el| {
                 el.child(
-                    div()
+                    h_flex()
                         .id("hdr-addr")
                         .flex_none()
-                        .text_xs()
+                        .items_center()
+                        .gap_1()
+                        .px_2()
+                        .h(px(22.))
+                        .rounded_full()
                         .cursor_pointer()
+                        .bg(cx.theme().muted)
                         .text_color(cx.theme().muted_foreground)
-                        .hover(|s| s.text_color(cx.theme().primary))
-                        .child(tail.clone())
+                        .hover(|s| s.bg(cx.theme().accent))
+                        .child(
+                            Icon::new(IconName::Network)
+                                .with_size(px(11.))
+                                .text_color(cx.theme().primary),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family("Consolas")
+                                .child(tail.clone()),
+                        )
                         .on_click({
                             let addr = tail.clone();
                             cx.listener(move |this, _ev, _window, cx| {

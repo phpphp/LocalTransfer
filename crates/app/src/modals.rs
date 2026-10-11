@@ -60,11 +60,19 @@ impl RootView {
                             .text_color(fg),
                     )
                     .child(
-                        div()
+                        // 多行 toast：gpui 文本把换行折叠成空格——按行拆开渲染
+                        v_flex()
                             .min_w_0()
-                            .text_sm()
-                            .text_color(fg)
-                            .child(text.clone()),
+                            .gap_0p5()
+                            .children(
+                                text.split('\n').map(|l| {
+                                    div()
+                                        .min_w_0()
+                                        .text_sm()
+                                        .text_color(fg)
+                                        .child(l.to_string())
+                                }),
+                            ),
                     )
                     .into_any_element(),
             );
