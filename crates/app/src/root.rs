@@ -219,6 +219,19 @@ pub fn desktop_notify(title: &str, body: &str) {
 #[cfg(not(target_os = "windows"))]
 pub fn desktop_notify(_title: &str, _body: &str) {}
 
+/// 测速结果（面板展示）
+#[derive(Clone)]
+pub struct SpeedResult {
+    pub peer_name: String,
+    /// 对端可达时的传输速度（MB/s）
+    pub up_mbps: Option<f64>,
+    pub down_mbps: Option<f64>,
+    /// 对端不可达原因（离线/版本过旧）
+    pub peer_err: Option<String>,
+    /// 本机链路（WiFi 协商速率 = 吞吐天花板；或"有线"）
+    pub link: Option<transfer_core::net::WifiLink>,
+}
+
 /// 待确认的接收请求（会话内的请求卡片数据）
 #[derive(Clone)]
 pub struct IncomingReq {
@@ -261,6 +274,9 @@ pub struct RootView {
 
     /// 清空聊天记录的两段确认状态（peer, 时间）
     pub confirm_clear: Option<(String, Instant)>,
+
+    /// 测速结果面板（None=不显示；点测速按钮填入，点关闭清空）
+    pub speed_result: Option<SpeedResult>,
 
     /// 设置弹窗
     pub show_settings: bool,
@@ -376,6 +392,7 @@ impl RootView {
             scroller,
             text_views: HashMap::new(),
             confirm_clear: None,
+            speed_result: None,
             show_settings: false,
             set_name,
             set_dir,

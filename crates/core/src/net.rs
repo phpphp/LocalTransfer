@@ -260,3 +260,112 @@ pub fn icmp_ping(host: std::net::Ipv4Addr, count: u32) -> Option<PingStats> {
 pub fn icmp_ping(_host: std::net::Ipv4Addr, _count: u32) -> Option<PingStats> {
     None
 }
+
+/// 本机网络链路信息（诊断传输天花板：WiFi 协商速率 × 信号质量）
+#[derive(Debug, Clone)]
+pub struct WifiLink {
+    /// 网卡描述（WiFi SSID 或 "有线"）
+    pub name: String,
+    pub is_wifi: bool,
+    /// 协商速率 Mbps（WiFi: RX/TX；有线：链路速率）
+    pub rx_mbps: f64,
+    pub tx_mbps: f64,
+    /// 信号质量 0-100（仅 WiFi）
+    pub signal_pct: u32,
+}
+
+/// 当前活动网卡的链路信息。
+/// WiFi 走 WlanQueryInterface（协商速率=iperf 类吞吐的天花板）；
+/// 非 WiFi（有线）从 if_addrs 网卡名粗判，速率未知返回 0。
+#[cfg(target_os = "windows")]
+pub fn wifi_link_info() -> Option<WifiLink> {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::NetworkManagement::WiFi::{
+        WlanEnumInterfaces, WlanOpenHandle, WlanQueryInterface,
+        wlan_intf_opcode_current_connection, WLAN_CONNECTION_ATTRIBUTES, WLAN_INTERFACE_INFO,
+        WLAN_INTERFACE_INFO_LIST,
+    };
+    unsafe {
+        let mut handle: HANDLE = std::ptr::null_mut();
+        let mut list: *mut WLAN_INTERFACE_INFO_LIST = std::ptr::null_mut();
+        let wlan_ok = WlanOpenHandle(2, std::ptr::null(), &mut 0, &mut handle) == 0
+            && WlanEnumInterfaces(handle, std::ptr::null(), &mut list) == 0;
+        let mut out: Option<WifiLink> = None;
+        if wlan_ok {
+        let n = (*list).dwNumberOfItems;
+        let items = (*list).InterfaceInfo.as_ptr();
+        for i in 0..n as usize {
+            let it: WLAN_INTERFACE_INFO = *items.add(i);
+            if it.isState != 1 { // wlan_interface_state_connected
+                continue;
+            }
+            // 接口描述（UTF-16 定长 256）
+            let desc = String::from_utf16_lossy(
+                &it.strInterfaceDescription[..]
+                    .iter()
+                    .take_while(|c| **c != 0)
+                    .copied()
+                    .collect::<Vec<_>>(),
+            );
+            let mut data: *mut core::ffi::c_void = std::ptr::null_mut();
+            let mut size: u32 = 0;
+            if WlanQueryInterface(
+                handle,
+                &it.InterfaceGuid,
+                wlan_intf_opcode_current_connection,
+                std::ptr::null(),
+                &mut size,
+                &mut data,
+                std::ptr::null_mut(),
+            ) == 0 && !data.is_null() && size as usize >= std::mem::size_of::<WLAN_CONNECTION_ATTRIBUTES>()
+            {
+                let conn = &*(data as *const WLAN_CONNECTION_ATTRIBUTES);
+                let assoc = &conn.wlanAssociationAttributes;
+                let ssid = String::from_utf16_lossy(
+                    &assoc.dot11Ssid.ucSSID[..assoc.dot11Ssid.uSSIDLength as usize]
+                        .iter().map(|b| *b as u16).collect::<Vec<_>>(),
+                );
+                // ulRxRate/ulTxRate：bps（实测 866.7M 档回报 866700000）
+                let rx = assoc.ulRxRate as f64 / 1e6;
+                let tx = assoc.ulTxRate as f64 / 1e6;
+                let link = WifiLink {
+                    name: if ssid.is_empty() { desc.clone() } else { ssid },
+                    is_wifi: true,
+                    rx_mbps: rx,
+                    tx_mbps: tx,
+                    signal_pct: assoc.wlanSignalQuality,
+                };
+                // 取第一个已连接的 WiFi 口
+                if out.is_none() || link.signal_pct > out.as_ref().unwrap().signal_pct {
+                    out = Some(link);
+                }
+                windows_sys::Win32::NetworkManagement::WiFi::WlanFreeMemory(data);
+            }
+        }
+        }
+        if wlan_ok {
+            windows_sys::Win32::NetworkManagement::WiFi::WlanFreeMemory(list as _);
+            windows_sys::Win32::Foundation::CloseHandle(handle);
+            if out.is_some() {
+                return out;
+            }
+        }
+        // 无 WiFi 口：有线（速率未知——if_addrs 拿不到链路速率，标 0）
+        let phys = lan_ipv4_interfaces();
+        if !phys.is_empty() {
+            return Some(WifiLink {
+                name: "有线".into(),
+                is_wifi: false,
+                rx_mbps: 0.0,
+                tx_mbps: 0.0,
+                signal_pct: 100,
+            });
+        }
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn wifi_link_info() -> Option<WifiLink> {
+    None
+}
