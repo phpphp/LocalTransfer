@@ -218,31 +218,6 @@ impl RootView {
             .when(self.speed_result.is_some(), |el| {
                 el.child(self.speedtest_panel(cx))
             })
-            // 测速按钮（仅设备会话，最右）：Speedtest 风格仪表盘图标
-            .when(!is_web, |el| {
-                el.child(
-                    div()
-                        .id("hdr-speedtest")
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .ml_2()
-                        .cursor_pointer()
-                        .text_color(cx.theme().muted_foreground)
-                        .hover(|s| s.text_color(cx.theme().primary))
-                        .child(
-                            svg()
-                                .path("icons/speedtest.svg")
-                                .size(px(15.))
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            if let Some(peer) = this.selected.clone() {
-                                this.run_speedtest(peer, cx);
-                            }
-                        })),
-                )
-            })
             .into_any_element()
     }
 
@@ -716,6 +691,32 @@ impl RootView {
                                 this.toast("已复制地址", false);
                             })
                         }),
+                )
+            })
+            // 测速按钮（仅设备会话，IP 胶囊右侧）：Speedtest 风格仪表盘图标
+            .when(!is_web, |el| {
+                el.child(
+                    div()
+                        .id("hdr-speedtest")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .ml_2()
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.text_color(cx.theme().primary))
+                        .child(
+                            svg()
+                                .path("icons/speedtest.svg")
+                                .size(px(15.))
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_click({
+                            let peer = peer_id.to_string();
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.run_speedtest(peer.clone(), cx);
+                            })
+                        })
                 )
             })
             .into_any_element()
