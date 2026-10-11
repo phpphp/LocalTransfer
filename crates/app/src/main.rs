@@ -138,6 +138,10 @@ fn main() {
             cx.spawn(async move |cx| {
                 cx.open_window(options, |window, cx| {
                     window.set_window_title("LocalTransfer");
+                    // Linux 任务栏图标：Wayland 的 app_id 与 desktop 文件名一致
+                    // （localtransfer.desktop），GNOME/KDE 才能匹配出应用图标
+                    #[cfg(target_os = "linux")]
+                    window.set_app_id("localtransfer");
                     // 双保险：部分环境下初始 bounds 会被平台层判无效退回默认小窗，
                     // 创建后显式再设一次尺寸
                     window.resize(win_size);

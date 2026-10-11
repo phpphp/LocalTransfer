@@ -42,8 +42,10 @@ SRC="\$TMPD/$DIR"
 # 1) 程序 → /usr/local/bin
 install -Dm755 "\$SRC/local-transfer" /usr/local/bin/local-transfer
 
-# 2) 图标
+# 2) 图标：绝对路径版 + hicolor 主题目录版（Wayland app_id 查图标走主题路径，
+#    GNOME 任务栏对 Icon= 绝对路径的支持不一致，两处都放才稳妥）
 install -Dm644 "\$SRC/icon.png" /usr/local/share/icons/localtransfer.png
+install -Dm644 "\$SRC/icon.png" /usr/local/share/icons/hicolor/512x512/apps/localtransfer.png
 
 # 3) 桌面菜单项（Exec/Icon 指向安装位置，不依赖解压目录）
 mkdir -p /usr/local/share/applications
