@@ -365,7 +365,78 @@ pub fn wifi_link_info() -> Option<WifiLink> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub fn wifi_link_info() -> Option<WifiLink> {
+    // /proc/net/wireless：每行 "iface: status, link, level, noise, nwid..."（link/level 为原始值，
+    // level 单位 dBm；wext_2.6.30+ quality 是 0..70——两种都出现，按 wext 惯例换算百分比）
+    let content = std::fs::read_to_string("/proc/net/wireless").ok()?;
+    for line in content.lines().skip(2) {
+        let Some((iface, rest)) = line.split_once(':') else { continue };
+        let iface = iface.trim();
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        if fields.len() < 3 {
+            continue;
+        }
+        let link_raw: f64 = fields[1].parse().unwrap_or(0.0);
+        let level_dbm: f64 = fields[2].parse().unwrap_or(-100.0);
+        // dBm → 百分比（-50dBm≈100%，-100dBm≈0%）
+        let signal_pct = ((2.0 * (level_dbm + 100.0)).clamp(0.0, 100.0)) as u32;
+        // SSID 与协商速率：iw 命令（多数发行版预装）
+        let (ssid, rate) = iw_link_info(iface);
+        return Some(WifiLink {
+            name: ssid.unwrap_or_else(|| iface.to_string()),
+            is_wifi: true,
+            rx_mbps: rate,
+            tx_mbps: rate,
+            signal_pct: if link_raw > 0.0 && link_raw <= 70.0 {
+                (link_raw / 70.0 * 100.0) as u32
+            } else {
+                signal_pct
+            },
+        });
+    }
+    // 无无线口：有线
+    let phys = lan_ipv4_interfaces();
+    if !phys.is_empty() {
+        return Some(WifiLink {
+            name: "有线".into(),
+            is_wifi: false,
+            rx_mbps: 0.0,
+            tx_mbps: 0.0,
+            signal_pct: 100,
+        });
+    }
+    None
+}
+
+/// iw 命令取 SSID 与协商速率（Mbit/s）。失败返回 (None, 0)
+#[cfg(target_os = "linux")]
+fn iw_link_info(iface: &str) -> (Option<String>, f64) {
+    let out = std::process::Command::new("iw")
+        .args(["dev", iface, "link"])
+        .output();
+    let Ok(out) = out else { return (None, 0.0) };
+    if !out.status.success() {
+        return (None, 0.0);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let ssid = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("SSID: ").map(|s| s.to_string()))
+        .filter(|s| !s.is_empty());
+    let rate = text
+        .lines()
+        .find_map(|l| {
+            let l = l.trim();
+            l.strip_prefix("tx bitrate: ")
+                .and_then(|r| r.split_whitespace().next())
+                .and_then(|v| v.parse::<f64>().ok())
+        })
+        .unwrap_or(0.0);
+    (ssid, rate)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub fn wifi_link_info() -> Option<WifiLink> {
     None
 }
