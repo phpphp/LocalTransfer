@@ -278,6 +278,11 @@ pub struct RootView {
     /// 测速面板开关（true=显示）。结果保留上次——再点图标只开关、不重测；
     /// 面板内「开始测速」按钮才发起新测试。切会话自动关闭
     pub speed_open: bool,
+    /// 测速停止请求（后台任务每步检查；true=请求停止）
+    pub speed_cancel: bool,
+    /// 当前测速任务的停止标志（每次开始测速重建）
+    pub speed_cancel_flag:
+        Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub speed_result: Option<SpeedResult>,
 
     /// 设置弹窗
@@ -395,6 +400,8 @@ impl RootView {
             text_views: HashMap::new(),
             confirm_clear: None,
             speed_open: false,
+            speed_cancel: false,
+            speed_cancel_flag: None,
             speed_result: None,
             show_settings: false,
             set_name,

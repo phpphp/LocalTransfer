@@ -241,19 +241,28 @@ impl RootView {
             link: None,
         });
         cx.notify();
+        let stop: std::sync::Arc<std::sync::atomic::AtomicBool> =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.speed_cancel_flag = Some(stop.clone());
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let base2 = base.clone();
             let updown = smol::unblock(move || {
-                transfer_core::client::speedtest_blocking(&base2)
+                transfer_core::client::speedtest_blocking(&base2, stop)
             });
             let link = smol::unblock(transfer_core::net::wifi_link_info);
             let updown = updown.await;
             let link = link.await;
             let (up, down, err) = match updown {
-                Ok((u, d)) => (Some(u), Some(d), None),
+                Ok(Some((u, d))) if d.is_nan() => {
+                    (Some(u), None, Some("已停止（下行未完成）".into()))
+                }
+                Ok(Some((u, d))) => (Some(u), Some(d), None),
+                Ok(None) => (None, None, Some("已停止".into())),
                 Err(_) => (None, None, Some("对方不在线或版本过旧".into())),
             };
             let _ = this.update(cx, |this, cx| {
+                this.speed_cancel = false;
                 this.speed_result = Some(SpeedResult {
                     peer_name: name,
                     up_mbps: up,
@@ -267,15 +276,18 @@ impl RootView {
         .detach();
     }
 
-    /// 测速结果面板（美化版）：头部下方浮动卡——标题行 + 分区内容 + 诊断条
+    /// 测速结果面板（美化版）：头部下方浮动卡——标题行 + 分区内容 + 诊断条。
+    /// 无结果（首次打开）也渲染——显示空态引导
     fn speedtest_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(r) = self.speed_result.clone() else {
-            return div().into_any_element();
-        };
+        let r = self.speed_result.clone();
+        let running =
+            matches!(&r, Some(x) if x.peer_err.as_deref() == Some("测速中…"));
         // 慢点判断
-        let (diag_text, diag_warn) = match (&r.up_mbps, &r.link) {
-            (Some(up), Some(link)) => {
-                let peer_min = (*up).min(r.down_mbps.unwrap_or(*up));
+        let (diag_text, diag_warn) = match r.as_ref().and_then(|x| {
+            Some((x.up_mbps?, x.down_mbps?, x.link.clone()?))
+        }) {
+            Some((up, down, link)) => {
+                let peer_min = up.min(down);
                 if link.is_wifi && link.signal_pct < 50 {
                     (
                         format!(
@@ -299,7 +311,7 @@ impl RootView {
                     )
                 }
             }
-            _ => (String::new(), false),
+            None => (String::new(), false),
         };
 
         v_flex()
@@ -347,15 +359,25 @@ impl RootView {
                             .items_center()
                             .child(
                                 Button::new("speed-run")
-                                    .label("开始测速")
+                                    .label(if running { "停止" } else { "开始测速" })
+                                    .icon(if running {
+                                        IconName::Pause
+                                    } else {
+                                        IconName::Play
+                                    })
                                     .primary()
                                     .xsmall()
-                                    .disabled(matches!(
-                                        &self.speed_result,
-                                        Some(r) if r.peer_err.as_deref() == Some("测速中…")
-                                    ))
                                     .on_click(cx.listener(|this, _ev, _window, cx| {
-                                        if let Some(peer) = this.selected.clone() {
+                                        // running 实时查（闭包不能借用局部 running）
+                                        let is_running = matches!(
+                                            &this.speed_result,
+                                            Some(x) if x.peer_err.as_deref() == Some("测速中…")
+                                        );
+                                        if is_running {
+                                            if let Some(f) = &this.speed_cancel_flag {
+                                                f.store(true, std::sync::atomic::Ordering::Relaxed);
+                                            }
+                                        } else if let Some(peer) = this.selected.clone() {
                                             this.run_speedtest(peer, cx);
                                         }
                                     })),
@@ -396,8 +418,8 @@ impl RootView {
                                     .text_color(cx.theme().muted_foreground)
                                     .child("对端传输"),
                             )
-                            .child(match (&r.up_mbps, &r.down_mbps, &r.peer_err) {
-                                (Some(u), Some(d), _) => h_flex()
+                            .child(match r.as_ref().and_then(|x| Some((x.up_mbps?, x.down_mbps?, x.peer_err.clone()))) {
+                                Some((u, d, _)) => h_flex()
                                     .gap_4()
                                     .child(
                                         v_flex()
@@ -438,9 +460,9 @@ impl RootView {
                                             .truncate()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(r.peer_name.clone()),
+                                            .child(r.as_ref().map(|x| x.peer_name.clone()).unwrap_or_default()),
                                     ),
-                                (_, _, Some(e)) if e == "测速中…" => h_flex()
+                                Some((_, _, Some(e))) if e == "测速中…" => h_flex()
                                     .gap_1p5()
                                     .items_center()
                                     .child(
@@ -454,11 +476,11 @@ impl RootView {
                                             .text_color(cx.theme().muted_foreground)
                                             .child("测速中…"),
                                     ),
-                                (None, None, None) => div()
+                                _ if !running => div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
                                     .child("点「开始测速」测量与对方的传输速度"),
-                                (_, _, Some(e)) => h_flex()
+                                Some((_, _, Some(e))) if e == "测速中…" => h_flex()
                                     .gap_1p5()
                                     .items_center()
                                     .child(
@@ -476,7 +498,7 @@ impl RootView {
                             }),
                     )
                     // 本机链路
-                    .when_some(r.link.clone(), |el, link| {
+                    .when_some(r.as_ref().and_then(|x| x.link.clone()), |el, link| {
                         el.child(
                             v_flex()
                                 .gap_1()

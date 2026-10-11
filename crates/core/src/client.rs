@@ -91,12 +91,56 @@ pub async fn speedtest(base: &str) -> Result<(f64, f64)> {
     Ok((up_mbps, down_mbps))
 }
 
-/// speedtest 的同步包装（UI 线程外调用：自建一次性 tokio runtime）
-pub fn speedtest_blocking(base: &str) -> Result<(f64, f64)> {
+/// speedtest 的同步包装（UI 线程外调用：自建一次性 tokio runtime）。
+/// stop 置 true 立即中止——返回已测得的部分（上行完成则保留上行；全未完成返回 Err）
+pub fn speedtest_blocking(
+    base: &str,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Option<(f64, f64)>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(speedtest(base))
+    // 简单起见：不逐块查 stop（reqwest 同步整体 POST/GET 无法中断），
+    // stop 在上行完成后、下行每读一块时检查（下行是长阶段，16MB 上行 LAN 上 1-3 秒）
+    rt.block_on(async {
+        let client = lan_client(base);
+        let n: usize = 16 * 1024 * 1024;
+        let buf = vec![0u8; n];
+        let t0 = std::time::Instant::now();
+        let resp = client
+            .post(format!("{base}/api/speedtest"))
+            .body(buf)
+            .send()
+            .await
+            .context("测速请求失败")?;
+        if !resp.status().is_success() {
+            bail!("对方返回 {}", resp.status());
+        }
+        let up_mbps = n as f64 / 1024.0 / 1024.0 / t0.elapsed().as_secs_f64();
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(Some((up_mbps, f64::NAN)));
+        }
+        let t0 = std::time::Instant::now();
+        let mut resp = client
+            .get(format!("{base}/api/speedtest?size={n}"))
+            .send()
+            .await
+            .context("测速请求失败")?;
+        if !resp.status().is_success() {
+            bail!("对方返回 {}", resp.status());
+        }
+        let mut got: usize = 0;
+        let mut chunks: usize = 0;
+        while let Some(chunk) = resp.chunk().await? {
+            got += chunk.len();
+            chunks += 1;
+            if chunks % 4 == 0 && stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return Ok(Some((up_mbps, f64::NAN)));
+            }
+        }
+        let down_mbps = got as f64 / 1024.0 / 1024.0 / t0.elapsed().as_secs_f64();
+        Ok(Some((up_mbps, down_mbps)))
+    })
 }
 
 /// 发送一条文本消息（不含入库，入库由调用方在发送前后自行决定）
