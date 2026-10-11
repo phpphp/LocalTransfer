@@ -4310,6 +4310,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "qrcode",
+ "rust-embed",
  "smol",
  "tauri-winrt-notification 0.8.1",
  "tracing",

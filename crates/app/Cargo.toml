@@ -16,6 +16,7 @@ gpui-kit = { workspace = true }
 smol = { workspace = true }
 uuid = { workspace = true }
 chrono = "0.4"
+rust-embed = "8"
 anyhow = { workspace = true }
 tracing = { workspace = true }
 qrcode = "0.14"

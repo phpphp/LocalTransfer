@@ -102,55 +102,6 @@ fn text_to_html(s: &str) -> String {
         .replace('\n', "<br>")
 }
 
-/// 自绘仪表盘图标（测速用；图标集里没有 speed/gauge——div 拼几何形状）
-/// 16px 座：上半圆弧描边 + 45° 指针。
-pub(crate) fn gauge_icon(color: Hsla) -> impl IntoElement {
-    div()
-        .flex_none()
-        .size(px(16.))
-        .flex()
-        .items_end()
-        .justify_center()
-        .child(
-            // 表盘：半圆弧（圆角边框只保留上边）
-            div()
-                .relative()
-                .size(px(14.))
-                .rounded_t_full()
-                .border_2()
-                .border_color(color)
-                .flex()
-                .items_end()
-                .justify_center()
-                .child(
-                    // 指针：三个逐级偏移的小方块拼成斜线（无 rotate API）
-                    h_flex()
-                        .absolute()
-                        .bottom(px(3.))
-                        .left(px(4.))
-                        .gap_0()
-                        .items_end()
-                        .child(div().w(px(2.)).h(px(7.)).rounded_full().bg(color))
-                        .child(
-                            div()
-                                .w(px(2.))
-                                .h(px(5.))
-                                .rounded_full()
-                                .bg(color)
-                                .mt(px(2.)),
-                        )
-                        .child(
-                            div()
-                                .w(px(2.))
-                                .h(px(3.))
-                                .rounded_full()
-                                .bg(color)
-                                .mt(px(4.)),
-                        ),
-                ),
-        )
-}
-
 impl RootView {
     pub fn render_chat(
         &mut self,
@@ -267,151 +218,36 @@ impl RootView {
             .when(self.speed_result.is_some(), |el| {
                 el.child(self.speedtest_panel(cx))
             })
-            .into_any_element()
-    }
-
-    /// 测速结果面板：对端传输 + 本机链路 + 慢点判断
-    fn speedtest_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(r) = self.speed_result.clone() else {
-            return div().into_any_element();
-        };
-        // 慢点判断
-        let diag: Option<(String, bool)> = match (&r.up_mbps, &r.link) {
-            (Some(up), Some(link)) => {
-                let peer_min = (*up).min(r.down_mbps.unwrap_or(*up));
-                if link.is_wifi && link.signal_pct < 50 {
-                    Some((
-                        format!(
-                            "WiFi 信号 {}%（{}）——信号偏弱，先靠近路由器或换 5GHz",
-                            link.signal_pct, link.name
-                        ),
-                        true,
-                    ))
-                } else if peer_min < 5.0 {
-                    Some((
-                        format!(
-                            "本机链路 {} Mbps 正常，慢在对端无线/网卡或跨网段",
-                            link.rx_mbps as u64
-                        ),
-                        true,
-                    ))
-                } else {
-                    Some((format!("链路正常（WiFi 协商 {} Mbps）", link.rx_mbps as u64), false))
-                }
-            }
-            _ => None,
-        };
-        v_flex()
-            .id("speed-panel")
-            .absolute()
-            .top(px(46.))
-            .right_4()
-            .w(px(300.))
-            .p_3()
-            .gap_2()
-            .rounded_xl()
-            .shadow_lg()
-            .bg(cx.theme().popover)
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("测速结果"),
-                    )
-                    .child(
-                        div()
-                            .id("speed-close")
-                            .flex_none()
-                            .cursor_pointer()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|s| s.text_color(cx.theme().foreground))
-                            .child(Icon::new(IconName::Close).with_size(px(14.)))
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.speed_result = None;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                v_flex().gap_0p5().child(
-                    match (&r.up_mbps, &r.down_mbps, &r.peer_err) {
-                        (Some(u), Some(d), _) => div().text_sm().child(format!(
-                            "{}：↑ {u:.1}　↓ {d:.1} MB/s",
-                            r.peer_name
-                        )),
-                        (_, _, Some(e)) => h_flex()
-                            .gap_1p5()
-                            .child(
-                                Icon::new(IconName::TriangleAlert)
-                                    .with_size(px(13.))
-                                    .text_color(cx.theme().warning),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("{}：{}", r.peer_name, e)),
-                            ),
-                        _ => div(),
-                    },
-                ),
-            )
-            .when_some(r.link.clone(), |el, link| {
+            // 测速按钮（仅设备会话，最右）：Speedtest 风格仪表盘图标
+            .when(!is_web, |el| {
                 el.child(
-                    v_flex().gap_0p5().child(if link.is_wifi {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "本机 WiFi「{}」：协商 ↓{} ↑{} Mbps · 信号 {}%",
-                                link.name,
-                                link.rx_mbps as u64,
-                                link.tx_mbps as u64,
-                                link.signal_pct
-                            ))
-                    } else {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("本机：有线连接")
-                    }),
-                )
-            })
-            .when_some(diag, |el, (text, is_warn)| {
-                el.child(
-                    h_flex()
-                        .gap_1p5()
-                        .pt_1()
+                    div()
+                        .id("hdr-speedtest")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .ml_2()
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.text_color(cx.theme().primary))
                         .child(
-                            Icon::new(if is_warn {
-                                IconName::TriangleAlert
-                            } else {
-                                IconName::CircleCheck
-                            })
-                            .with_size(px(13.))
-                            .text_color(if is_warn {
-                                cx.theme().warning
-                            } else {
-                                cx.theme().success
-                            }),
+                            svg()
+                                .path("icons/speedtest.svg")
+                                .size(px(15.))
+                                .text_color(cx.theme().muted_foreground),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .child(text),
-                        ),
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            if let Some(peer) = this.selected.clone() {
+                                this.run_speedtest(peer, cx);
+                            }
+                        })),
                 )
             })
             .into_any_element()
     }
 
-    /// 测速：①本机 WiFi 链路（协商速率/信号——吞吐天花板，始终可测）
-    /// ②对端传输速度（对方在线才测得）。结果进面板（不 toast）
+    /// 测速：①本机链路（WiFi 协商速率/信号——吞吐天花板，不依赖对端，离线也测）
+    /// ②对端传输速度（对方在线才测得）。结果进浮动面板
     fn run_speedtest(&mut self, peer_id: String, cx: &mut Context<Self>) {
         let Some(dev) = self.devices.iter().find(|d| d.info.id == peer_id).cloned() else {
             return;
@@ -450,6 +286,260 @@ impl RootView {
             });
         })
         .detach();
+    }
+
+    /// 测速结果面板（美化版）：头部下方浮动卡——标题行 + 分区内容 + 诊断条
+    fn speedtest_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(r) = self.speed_result.clone() else {
+            return div().into_any_element();
+        };
+        // 慢点判断
+        let (diag_text, diag_warn) = match (&r.up_mbps, &r.link) {
+            (Some(up), Some(link)) => {
+                let peer_min = (*up).min(r.down_mbps.unwrap_or(*up));
+                if link.is_wifi && link.signal_pct < 50 {
+                    (
+                        format!(
+                            "本机 WiFi 信号 {}%——偏弱，靠近路由器或换 5GHz",
+                            link.signal_pct
+                        ),
+                        true,
+                    )
+                } else if peer_min < 5.0 {
+                    (
+                        format!(
+                            "本机链路 {} Mbps 正常，慢在对端无线/网卡或跨网段",
+                            link.rx_mbps as u64
+                        ),
+                        true,
+                    )
+                } else {
+                    (
+                        format!("链路正常（WiFi 协商 {} Mbps）", link.rx_mbps as u64),
+                        false,
+                    )
+                }
+            }
+            _ => (String::new(), false),
+        };
+
+        v_flex()
+            .id("speed-panel")
+            .absolute()
+            .top(px(48.))
+            .right_3()
+            .w(px(320.))
+            .overflow_hidden()
+            .rounded_2xl()
+            .shadow_lg()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            // 标题条（主题色渐变底）
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .px_3()
+                    .py_2()
+                    .bg(cx.theme().primary.opacity(0.08))
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .child(
+                                svg()
+                                    .path("icons/speedtest.svg")
+                                    .size(px(14.))
+                                    .text_color(cx.theme().primary),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("网络测速"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("speed-close")
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_color(cx.theme().muted_foreground)
+                            .hover(|st| st.bg(cx.theme().accent))
+                            .child(Icon::new(IconName::Close).with_size(px(13.)))
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.speed_result = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .p_3()
+                    // 对端传输
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("对端传输"),
+                            )
+                            .child(match (&r.up_mbps, &r.down_mbps, &r.peer_err) {
+                                (Some(u), Some(d), _) => h_flex()
+                                    .gap_4()
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .child(
+                                                div()
+                                                    .text_lg()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(cx.theme().primary)
+                                                    .child(format!("{u:.1}")),
+                                            )
+                                            .child(
+                                                div().text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("↑ 上行 MB/s"),
+                                            ),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .child(
+                                                div()
+                                                    .text_lg()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(cx.theme().primary)
+                                                    .child(format!("{d:.1}")),
+                                            )
+                                            .child(
+                                                div().text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("↓ 下行 MB/s"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(r.peer_name.clone()),
+                                    ),
+                                (_, _, Some(e)) => h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(
+                                        Icon::new(IconName::Info)
+                                            .with_size(px(13.))
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!("{e}（对端测速不可用）")),
+                                    ),
+                                _ => div(),
+                            }),
+                    )
+                    // 本机链路
+                    .when_some(r.link.clone(), |el, link| {
+                        el.child(
+                            v_flex()
+                                .gap_1()
+                                .pt_2()
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("本机到网关链路"),
+                                )
+                                .child(if link.is_wifi {
+                                    h_flex()
+                                        .justify_between()
+                                        .child(
+                                            div().text_sm().child(format!(
+                                                "WiFi「{}」",
+                                                link.name
+                                            )),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!(
+                                                    "{} Mbps · 信号 {}%",
+                                                    link.rx_mbps as u64,
+                                                    link.signal_pct
+                                                )),
+                                        )
+                                } else {
+                                    h_flex()
+                                        .justify_between()
+                                        .child(div().text_sm().child("有线连接"))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("千兆/百兆由网卡协商"),
+                                        )
+                                }),
+                        )
+                    })
+                    // 诊断条
+                    .when(!diag_text.is_empty(), |el| {
+                        el.child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .mt_1()
+                                .px_2()
+                                .py_1p5()
+                                .rounded_lg()
+                                .bg(if diag_warn {
+                                    cx.theme().warning.opacity(0.1)
+                                } else {
+                                    cx.theme().success.opacity(0.1)
+                                })
+                                .child(
+                                    Icon::new(if diag_warn {
+                                        IconName::TriangleAlert
+                                    } else {
+                                        IconName::CircleCheck
+                                    })
+                                    .with_size(px(13.))
+                                    .text_color(if diag_warn {
+                                        cx.theme().warning
+                                    } else {
+                                        cx.theme().success
+                                    }),
+                                )
+                                .child(
+                                    div().text_xs().child(diag_text.clone()),
+                                ),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 
     /// 没有选中设备时的占位
@@ -591,27 +681,6 @@ impl RootView {
                             this.show_web_qr = true;
                             cx.notify();
                         })),
-                )
-            })
-            // 测速按钮（仅设备会话）：自绘仪表盘图标
-            .when(!is_web, |el| {
-                el.child(
-                    div()
-                        .id("hdr-speedtest")
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .mr_2()
-                        .cursor_pointer()
-                        .text_color(cx.theme().muted_foreground)
-                        .hover(|s| s.text_color(cx.theme().primary))
-                        .child(gauge_icon(cx.theme().muted_foreground))
-                        .on_click({
-                            let peer = peer_id.to_string();
-                            cx.listener(move |this, _ev, _window, cx| {
-                                this.run_speedtest(peer.clone(), cx);
-                            })
-                        }),
                 )
             })
             // 普通设备：地址胶囊（浅底圆角 + 图标 + 等宽字，点击复制）

@@ -4,6 +4,7 @@
 // gpui 的宏链较深，#[test] 展开会撞默认递归上限
 #![recursion_limit = "256"]
 
+mod assets;
 mod chat;
 mod modals;
 mod root;
@@ -112,7 +113,7 @@ fn main() {
         .expect("启动核心失败");
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             // 组件库内置文案（输入框右键菜单的 剪切/复制/粘贴/全选 等）切中文，
