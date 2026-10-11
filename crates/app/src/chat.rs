@@ -16,7 +16,7 @@ use gpui_kit::base::{TextView as SelectableText, TextViewState, TextViewStyle as
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::message_scroller::MessageScroller;
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -215,20 +215,24 @@ impl RootView {
             )
             .child(self.input_bar(cx))
             // 测速结果面板（头部下方浮动卡片）
-            .when(self.speed_result.is_some(), |el| {
+            .when(self.speed_open, |el| {
                 el.child(self.speedtest_panel(cx))
             })
             .into_any_element()
     }
 
-    /// 测速：①本机链路（WiFi 协商速率/信号——吞吐天花板，不依赖对端，离线也测）
-    /// ②对端传输速度（对方在线才测得）。结果进浮动面板
+    /// 发起测速（面板「开始测速」按钮触发）：①本机链路（WiFi 协商速率/信号，
+    /// 吞吐天花板，不依赖对端）②对端传输速度（在线才测得）
     fn run_speedtest(&mut self, peer_id: String, cx: &mut Context<Self>) {
         let Some(dev) = self.devices.iter().find(|d| d.info.id == peer_id).cloned() else {
             return;
         };
         let base = dev.http_base();
         let name = dev.info.name.clone();
+        let running = matches!(&self.speed_result, Some(r) if r.peer_err.as_deref() == Some("测速中…"));
+        if running {
+            return; // 已在测，不重复发起
+        }
         self.speed_result = Some(SpeedResult {
             peer_name: name.clone(),
             up_mbps: None,
@@ -338,22 +342,42 @@ impl RootView {
                             ),
                     )
                     .child(
-                        div()
-                            .id("speed-close")
-                            .flex_none()
-                            .flex()
+                        h_flex()
+                            .gap_1p5()
                             .items_center()
-                            .justify_center()
-                            .size(px(20.))
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|st| st.bg(cx.theme().accent))
-                            .child(Icon::new(IconName::Close).with_size(px(13.)))
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.speed_result = None;
-                                cx.notify();
-                            })),
+                            .child(
+                                Button::new("speed-run")
+                                    .label("开始测速")
+                                    .primary()
+                                    .xsmall()
+                                    .disabled(matches!(
+                                        &self.speed_result,
+                                        Some(r) if r.peer_err.as_deref() == Some("测速中…")
+                                    ))
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        if let Some(peer) = this.selected.clone() {
+                                            this.run_speedtest(peer, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("speed-close")
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(20.))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .hover(|st| st.bg(cx.theme().accent))
+                                    .child(Icon::new(IconName::Close).with_size(px(13.)))
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        this.speed_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .child(
@@ -416,6 +440,24 @@ impl RootView {
                                             .text_color(cx.theme().muted_foreground)
                                             .child(r.peer_name.clone()),
                                     ),
+                                (_, _, Some(e)) if e == "测速中…" => h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(
+                                        Icon::new(IconName::Loader)
+                                            .with_size(px(13.))
+                                            .text_color(cx.theme().primary),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("测速中…"),
+                                    ),
+                                (None, None, None) => div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("点「开始测速」测量与对方的传输速度"),
                                 (_, _, Some(e)) => h_flex()
                                     .gap_1p5()
                                     .items_center()
@@ -711,12 +753,11 @@ impl RootView {
                                 .size(px(15.))
                                 .text_color(cx.theme().muted_foreground),
                         )
-                        .on_click({
-                            let peer = peer_id.to_string();
-                            cx.listener(move |this, _ev, _window, cx| {
-                                this.run_speedtest(peer.clone(), cx);
-                            })
-                        })
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            // 图标=开关面板（结果保留上次）；再点关闭
+                            this.speed_open = !this.speed_open;
+                            cx.notify();
+                        }))
                 )
             })
             .into_any_element()

@@ -275,7 +275,9 @@ pub struct RootView {
     /// 清空聊天记录的两段确认状态（peer, 时间）
     pub confirm_clear: Option<(String, Instant)>,
 
-    /// 测速结果面板（None=不显示；点测速按钮填入，点关闭清空）
+    /// 测速面板开关（true=显示）。结果保留上次——再点图标只开关、不重测；
+    /// 面板内「开始测速」按钮才发起新测试。切会话自动关闭
+    pub speed_open: bool,
     pub speed_result: Option<SpeedResult>,
 
     /// 设置弹窗
@@ -392,6 +394,7 @@ impl RootView {
             scroller,
             text_views: HashMap::new(),
             confirm_clear: None,
+            speed_open: false,
             speed_result: None,
             show_settings: false,
             set_name,
@@ -418,6 +421,7 @@ impl RootView {
             return;
         }
         self.selected = Some(peer_id.to_string());
+        self.speed_open = false; // 测速面板属于当前会话——切走即关
         self.unread.insert(peer_id.to_string(), 0);
         self.sync_tray_badge();
         // 首次进入该会话时读历史；事件流先塞进来的那几条同样已入库，
