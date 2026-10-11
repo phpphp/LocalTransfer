@@ -191,7 +191,9 @@ class MiniHttpServer(
 
     private fun handle(s: Socket) {
         runCatching {
-            s.soTimeout = (PREPARE_TIMEOUT_MS + 5000).toInt()
+            // prepare 等待由轮询天然有界；上传读超时不设限（16GB 慢网可能几十分钟，
+            // 由发送方取消/断连收场）——soTimeout=0 即无限
+            s.soTimeout = 0
             val input = s.getInputStream()
             val reqLine = readLine(input) ?: return
             val parts = reqLine.split(" ")
@@ -222,6 +224,24 @@ class MiniHttpServer(
         when {
             req.method == "GET" && req.path == "/api/info" ->
                 Resp.okJson(identity.toJson().toString())
+
+            // 测速：GET ?size=N 下行（零填充）；POST 上行（读全丢弃回字节数）
+            req.method == "GET" && req.path.startsWith("/api/speedtest") -> {
+                val size = req.path.substringAfter("size=", "")
+                    .toLongOrNull() ?: (16L * 1024 * 1024)
+                val n = size.coerceAtMost(64L * 1024 * 1024)
+                Resp(200, ByteArray(n.toInt()))
+            }
+            req.method == "POST" && req.path == "/api/speedtest" -> {
+                var got = 0L
+                val buf = ByteArray(256 * 1024)
+                while (true) {
+                    val n = req.body.read(buf)
+                    if (n <= 0) break
+                    got += n
+                }
+                Resp(200, got.toString().toByteArray())
+            }
 
             req.method == "POST" && req.path == "/api/message" -> {
                 val j = JSONObject(String(req.readBody() ?: return Resp.err(400, "body"),

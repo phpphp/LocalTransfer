@@ -69,8 +69,8 @@ class TransferApi(private val me: DeviceInfo) {
             conn.requestMethod = "PUT"
             conn.doOutput = true
             conn.connectTimeout = 5000
-            // 大文件慢网（16GB 可能传几十分钟）——10 分钟读超时会中途掐死，24h 兜底
-            conn.readTimeout = 24 * 60 * 60_000
+            // 大文件慢网可能传几十分钟——不设读超时（0=无限），发送方取消/断连收场
+            conn.readTimeout = 0
             conn.setRequestProperty("Content-Type", "application/octet-stream")
             conn.setFixedLengthStreamingMode(total)
             val out: OutputStream = conn.outputStream   // 先拿流（建立连接）
@@ -110,4 +110,45 @@ class TransferApi(private val me: DeviceInfo) {
             readTimeout = (PREPARE_TIMEOUT_MS + 5000).toInt()
             setRequestProperty("Content-Type", "application/json")
         }
+    /** 与对端测速：上行 POST 8MB + 下行 GET 8MB，返回 (上行 MB/s, 下行 MB/s) */
+    fun speedTest(peer: Peer): Pair<Double, Double>? {
+        val n = 8L * 1024 * 1024
+        return runCatching {
+            // 上行
+            val up = URL("${base(peer)}/api/speedtest").run {
+                val c = openConnection() as HttpURLConnection
+                c.requestMethod = "POST"
+                c.doOutput = true
+                c.connectTimeout = 3000
+                c.readTimeout = 10000
+                c.setFixedLengthStreamingMode(n)
+                val t0 = System.currentTimeMillis()
+                val zeros = ByteArray(1024 * 1024)
+                c.outputStream.use { o ->
+                    repeat((n / zeros.size).toInt()) { o.write(zeros) }
+                }
+                if (c.responseCode != 200) return null
+                val upSec = (System.currentTimeMillis() - t0) / 1000.0
+                n / 1048576.0 / upSec
+            }
+            // 下行
+            val down = URL("${base(peer)}/api/speedtest?size=$n").run {
+                val c = openConnection() as HttpURLConnection
+                c.connectTimeout = 3000
+                c.readTimeout = 10000
+                if (c.responseCode != 200) return null
+                val t0 = System.currentTimeMillis()
+                val buf = ByteArray(256 * 1024)
+                var got = 0L
+                c.inputStream.use { i ->
+                    while (true) { val r = i.read(buf); if (r <= 0) break; got += r }
+                }
+                val downSec = (System.currentTimeMillis() - t0) / 1000.0
+                if (got <= 0) return null
+                got / 1048576.0 / downSec
+            }
+            up to down
+        }.getOrNull()
+    }
+
 }

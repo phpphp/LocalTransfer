@@ -58,6 +58,7 @@ import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PhoneIphone
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -343,7 +344,7 @@ object App {
     lateinit var api: TransferApi
     lateinit var ctx: Context
     private var inited = false
-    private val main = Handler(Looper.getMainLooper())
+    internal val main = Handler(Looper.getMainLooper())
 
     val peers get() = disc.peers
     /** 应用内相册选择器（微信式网格）是否打开 */
@@ -1467,6 +1468,20 @@ fun ChatScreen(peerId: String) {
                     }
                 },
                 actions = {
+                    // 与对端测速（上行+下行各 8MB）
+                    IconButton(onClick = {
+                        val p = peers[peerId] ?: return@IconButton
+                        App.sendStatus = "正在与 ${p.info.name} 测速…"
+                        GlobalScope.launch(Dispatchers.IO) {
+                            val r = runCatching { App.api.speedTest(p) }.getOrNull()
+                            App.main.post {
+                                App.sendStatus = when (r) {
+                                    null -> "测速失败（对方不在线或版本过旧）"
+                                    else -> "${p.info.name}：↑ ${"%.1f".format(r.first)} MB/s　↓ ${"%.1f".format(r.second)} MB/s"
+                                }
+                            }
+                        }
+                    }) { Icon(Icons.Rounded.Speed, "测速") }
                     // 清空当前会话的聊天记录（内存态，不影响已接收文件）
                     IconButton(onClick = { showClear = true }) {
                         Icon(Icons.Rounded.DeleteSweep, "清空记录")

@@ -9,7 +9,7 @@ use std::{
 };
 
 use axum::{
-    extract::{ConnectInfo, Path, Request, State},
+    extract::{ConnectInfo, Path, Query, Request, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::{get, post, put},
@@ -84,6 +84,8 @@ pub async fn serve(state: Arc<ServerState>, port: u16) -> anyhow::Result<()> {
         .route("/api/transfer/prepare", post(prepare))
         .route("/api/transfer/upload/{token}/{file_id}", put(upload))
         .route("/api/transfer/cancel/{token}", post(cancel_transfer))
+    // 测速：GET 下行（?size=N 字节零填充流式回）；POST 上行（读全丢弃回字节数）
+    .route("/api/speedtest", get(speedtest_down).post(speedtest_up))
         .route("/", get(crate::web::page))
         .route("/api/web/messages", get(crate::web::messages))
         .route("/api/web/message", post(crate::web::message))
@@ -131,6 +133,38 @@ async fn info(
 // ---------------------------------------------------------------------------
 // POST /api/message
 // ---------------------------------------------------------------------------
+
+/// GET /api/speedtest?size=N：下行测速（零填充 1MB 块流式回）
+async fn speedtest_down(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    use axum::body::Body;
+    use futures::stream::iter;
+    let size: usize = params
+        .get("size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(16 * 1024 * 1024)
+        .min(64 * 1024 * 1024);
+    let chunk_len = 1024 * 1024;
+    let n_chunks = size / chunk_len;
+    let chunk = bytes::Bytes::from(vec![0u8; chunk_len]);
+    let body = Body::from_stream(
+        iter((0..n_chunks).map(move |_| Ok::<_, std::io::Error>(chunk.clone()))),
+    );
+    Response::builder()
+        .header("Content-Length", (n_chunks * chunk_len).to_string())
+        .body(body)
+        .unwrap()
+}
+
+/// POST /api/speedtest：上行测速（读取全部请求体并丢弃，返回字节数）
+async fn speedtest_up(req: Request) -> Response {
+    let n = axum::body::to_bytes(req.into_body(), 128 * 1024 * 1024)
+        .await
+        .map(|b| b.len())
+        .unwrap_or(0);
+    format!("{n}").into_response()
+}
 
 async fn message(
     State(st): State<Arc<ServerState>>,

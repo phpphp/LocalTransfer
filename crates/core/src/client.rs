@@ -53,6 +53,52 @@ pub fn lan_client(base: &str) -> reqwest::Client {
         .unwrap()
 }
 
+/// 与对端测速：POST 16MB（上行）+ GET 16MB（下行），返回 (上行 MB/s, 下行 MB/s)
+pub async fn speedtest(base: &str) -> Result<(f64, f64)> {
+    let client = lan_client(base);
+    let n: usize = 16 * 1024 * 1024;
+    // 上行
+    let buf = vec![0u8; n];
+    let t0 = std::time::Instant::now();
+    let resp = client
+        .post(format!("{base}/api/speedtest"))
+        .body(buf)
+        .send()
+        .await
+        .context("测速请求失败")?;
+    if !resp.status().is_success() {
+        bail!("对方返回 {}", resp.status());
+    }
+    let up_secs = t0.elapsed().as_secs_f64();
+    let up_mbps = n as f64 / 1024.0 / 1024.0 / up_secs;
+    // 下行
+    let t0 = std::time::Instant::now();
+    let mut resp = client
+        .get(format!("{base}/api/speedtest?size={n}"))
+        .send()
+        .await
+        .context("测速请求失败")?;
+    if !resp.status().is_success() {
+        bail!("对方返回 {}", resp.status());
+    }
+    let mut got: usize = 0;
+    while let Some(chunk) = resp.chunk().await? {
+        got += chunk.len();
+    }
+    let down_secs = t0.elapsed().as_secs_f64();
+    anyhow::ensure!(got > 0, "对端未返回测速数据");
+    let down_mbps = got as f64 / 1024.0 / 1024.0 / down_secs;
+    Ok((up_mbps, down_mbps))
+}
+
+/// speedtest 的同步包装（UI 线程外调用：自建一次性 tokio runtime）
+pub fn speedtest_blocking(base: &str) -> Result<(f64, f64)> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(speedtest(base))
+}
+
 /// 发送一条文本消息（不含入库，入库由调用方在发送前后自行决定）
 pub async fn send_text(base: &str, me: &DeviceInfo, text: &str, sent_at: i64) -> Result<()> {
     let client = lan_client(base);
@@ -154,9 +200,8 @@ async fn send_files_inner(
     let client = reqwest::Client::builder()
         // 局域网直连：绝不吃系统代理
         .no_proxy()
-        // 大文件慢网（16GB @ 20MB/s ≈ 14 分钟）下固定 600s 会中途掐死传输；
-        // 改 24h 上限，卡死场景由用户取消按钮处理
-        .timeout(std::time::Duration::from_secs(24 * 3600))
+        // 无总超时：大文件慢网可能传几十分钟，只有用户手动取消才终止
+        // （连接失败仍由 connect_timeout 5s 兜住）
         .local_address(lan_bind_addr(base))
         .connect_timeout(std::time::Duration::from_secs(5))
         .build()?;

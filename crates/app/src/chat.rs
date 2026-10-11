@@ -189,6 +189,7 @@ impl RootView {
             .h_full()
             .child(self.chat_header(
                 is_web,
+                &peer,
                 &name,
                 &peer_plat,
                 online,
@@ -214,6 +215,37 @@ impl RootView {
             )
             .child(self.input_bar(cx))
             .into_any_element()
+    }
+
+    /// 与对端测速（上行+下行各 16MB），结果 toast
+    fn run_speedtest(&mut self, peer_id: String, cx: &mut Context<Self>) {
+        let Some(dev) = self.devices.iter().find(|d| d.info.id == peer_id).cloned() else {
+            return;
+        };
+        let base = dev.http_base();
+        let name = dev.info.name.clone();
+        self.toast(format!("正在与 {name} 测速…"), false);
+        cx.spawn(async move |this, cx| {
+            match smol::unblock(move || transfer_core::client::speedtest_blocking(&base)).await
+            {
+                Ok((up, down)) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.toast(
+                            format!("{name}：↑ {up:.1} MB/s　↓ {down:.1} MB/s"),
+                            false,
+                        );
+                        cx.notify();
+                    });
+                }
+                Err(_) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.toast("测速失败（对方不在线或版本过旧）".to_string(), true);
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
     }
 
     /// 没有选中设备时的占位
@@ -245,6 +277,7 @@ impl RootView {
     fn chat_header(
         &self,
         is_web: bool,
+        peer_id: &str,
         name: &str,
         plat: &str,
         online: bool,
@@ -354,6 +387,27 @@ impl RootView {
                             this.show_web_qr = true;
                             cx.notify();
                         })),
+                )
+            })
+            // 测速按钮（仅设备会话）：上行/下行各测 16MB，toast 出结果
+            .when(!is_web, |el| {
+                el.child(
+                    div()
+                        .id("hdr-speedtest")
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .mr_2()
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.text_color(cx.theme().primary))
+                        .child(Icon::new(IconName::ChartPie).with_size(px(14.)))
+                        .on_click({
+                            let peer = peer_id.to_string();
+                            cx.listener(move |this, _ev, _window, cx| {
+                                this.run_speedtest(peer.clone(), cx);
+                            })
+                        }),
                 )
             })
             // 普通设备：地址文字（最右，点击复制）
