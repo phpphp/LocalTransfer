@@ -436,7 +436,53 @@ fn iw_link_info(iface: &str) -> (Option<String>, f64) {
     (ssid, rate)
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+pub fn wifi_link_info() -> Option<WifiLink> {
+    // airport CLI（Apple80211 私有框架自带，所有 macOS 均有；CoreWLAN 需 objc 绑定不值当）
+    // 输出字段：agrCtlRSSI（dBm）、lastTxRate（Mbit/s）、SSID
+    let airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/airport";
+    let out = std::process::Command::new(airport)
+        .arg("-I")
+        .output();
+    if let Ok(out) = out {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let field = |name: &str| {
+                text.lines().find_map(|l| {
+                    let l = l.trim();
+                    l.strip_prefix(&format!("{name}:"))
+                        .map(|v| v.trim().to_string())
+                })
+            };
+            let rssi: f64 = field("agrCtlRSSI").and_then(|v| v.parse().ok()).unwrap_or(-100.0);
+            let rate: f64 = field("lastTxRate").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let ssid = field("SSID").filter(|s| !s.is_empty());
+            // dBm → 百分比（与 Linux 同口径：-50≈100%，-100≈0%）
+            let signal_pct = ((2.0 * (rssi + 100.0)).clamp(0.0, 100.0)) as u32;
+            return Some(WifiLink {
+                name: ssid.unwrap_or_else(|| "WiFi".into()),
+                is_wifi: true,
+                rx_mbps: rate,
+                tx_mbps: rate,
+                signal_pct,
+            });
+        }
+    }
+    // 无 WiFi 或 airport 失败：有线（macOS 网口经 ifconfig 判定，这里只判有地址即有线）
+    let phys = lan_ipv4_interfaces();
+    if !phys.is_empty() {
+        return Some(WifiLink {
+            name: "有线".into(),
+            is_wifi: false,
+            rx_mbps: 0.0,
+            tx_mbps: 0.0,
+            signal_pct: 100,
+        });
+    }
+    None
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 pub fn wifi_link_info() -> Option<WifiLink> {
     None
 }
