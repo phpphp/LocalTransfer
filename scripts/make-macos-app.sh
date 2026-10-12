@@ -45,6 +45,15 @@ cat > "$APP/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# ad-hoc 签名（无开发者账号也可签）：
+# 未签名 app 会被 Gatekeeper/App Translocation 搬到随机只读路径运行，
+# macOS 的"本地网络"隐私权限按签名指纹记账——每次构建的新未签名二进制
+# 都被视为"另一个 app"，旧授权作废且可能不再弹窗（ multicast 收发全被静默拦截，
+# 表现为"谁也发现不了谁"）。ad-hoc 签名让 app 结构合法、权限弹窗可靠出现。
+if command -v codesign >/dev/null; then
+  codesign --force --sign - dist/LocalTransfer.app
+fi
+
 # dmg 装载后展示 /Applications 快捷方式（拖拽安装的标准布局）
 if [ -d dist/LocalTransfer.app ]; then
   rm -rf dist/.dmg-stage

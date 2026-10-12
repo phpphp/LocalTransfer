@@ -72,6 +72,9 @@ jobs:
         run: |
           chmod +x scripts/make-macos-app.sh
           ./scripts/make-macos-app.sh target/${{ matrix.target }}/release/local-transfer
+          # 未签名 app 会被本地网络权限按新 app 对待（旧授权作废且可能不弹窗）
+          # —— multicast 收发被静默拦截 = 谁也发现不了谁。ad-hoc 签名修复
+          codesign --force --sign - dist/LocalTransfer.app
           # dmg 布局：app + /Applications 快捷方式（拖拽安装标准式）
           rm -rf dist/.dmg-root && mkdir -p dist/.dmg-root
           cp -R dist/LocalTransfer.app dist/.dmg-root/
