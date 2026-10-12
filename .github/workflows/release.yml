@@ -68,12 +68,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Package (.app bundle)
+      - name: Package (.app bundle + dmg 拖拽安装布局)
         run: |
           chmod +x scripts/make-macos-app.sh
           ./scripts/make-macos-app.sh target/${{ matrix.target }}/release/local-transfer
+          # dmg 布局：app + /Applications 快捷方式（拖拽安装标准式）
+          rm -rf dist/.dmg-root && mkdir -p dist/.dmg-root
+          cp -R dist/LocalTransfer.app dist/.dmg-root/
+          ln -s /Applications dist/.dmg-root/Applications
           hdiutil create -volname "${{ env.APP_NAME }}" \
-            -srcfolder dist/LocalTransfer.app \
+            -srcfolder dist/.dmg-root \
             -ov -format UDZO "${{ env.APP_NAME }}-${{ env.VERSION }}-${{ matrix.target }}.dmg"
       - uses: actions/upload-artifact@v4
         with:

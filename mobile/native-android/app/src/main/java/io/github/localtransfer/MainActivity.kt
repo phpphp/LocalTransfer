@@ -1474,18 +1474,16 @@ fun ChatScreen(peerId: String) {
                         App.sendStatus = "正在与 ${p.info.name} 测速…"
                         GlobalScope.launch(Dispatchers.IO) {
                             val r = runCatching { App.api.speedTest(p) }.getOrNull()
-                            // 网关链路（无线信号质量）
-                            val gwInfo = App.api.defaultGateway()?.let { g ->
-                                App.api.gatewayPing(g)?.let { (avg, loss) ->
-                                    val bad = avg > 30 || loss > 10
-                                    val diag = when {
-                                        r == null -> ""
-                                        bad -> "→ 本机到网关链路差，先靠近路由器/换频段"
-                                        r.first < 5 || r.second < 5 -> "→ 本机链路正常，慢在对端无线/网卡"
-                                        else -> "→ 链路正常"
-                                    }
-                                    "网关 $g：${"%.0f".format(avg)}ms 丢包 ${"%.0f".format(loss)}%$diag"
+                            // 本机 WiFi 链路（协商速率=吞吐天花板 + 信号%——与桌面同语义）
+                            val link = App.api.wifiLinkInfo()?.let { (ssid, mbps, pct) ->
+                                val bad = pct < 50
+                                val diag = when {
+                                    r == null -> ""
+                                    bad -> "→ 本机 WiFi 信号 $pct% 偏弱，靠近路由器/换 5GHz"
+                                    r.first < 5 || r.second < 5 -> "→ 本机链路 $mbps Mbps 正常，慢在对端"
+                                    else -> "→ 链路正常"
                                 }
+                                "WiFi「$ssid」：$mbps Mbps · 信号 $pct%\n$diag"
                             }
                             App.main.post {
                                 App.sendStatus = buildString {
@@ -1493,7 +1491,7 @@ fun ChatScreen(peerId: String) {
                                         null -> "测速失败（对方不在线或版本过旧）"
                                         else -> "${p.info.name}：↑ ${"%.1f".format(r.first)} ↓ ${"%.1f".format(r.second)} MB/s"
                                     })
-                                    gwInfo?.let { append("\n").append(it) }
+                                    link?.let { append("\n").append(it) }
                                 }
                             }
                         }

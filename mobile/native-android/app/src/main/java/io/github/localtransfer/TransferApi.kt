@@ -1,5 +1,6 @@
 package io.github.localtransfer
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -126,6 +127,21 @@ class TransferApi(private val me: DeviceInfo) {
                 "${ip.substring(6,8).toInt(16)}.${ip.substring(4,6).toInt(16)}." +
                 "${ip.substring(2,4).toInt(16)}.${ip.substring(0,2).toInt(16)}"
             }
+    }.getOrNull()
+
+    /** WiFi 链路信息（与桌面同语义）：协商速率 Mbps + 信号 0-100 + SSID。
+     *  与 ping 延迟不同——速率是吞吐天花板（iperf3 类判断依据） */
+    fun wifiLinkInfo(): Triple<String, Int, Int>? = runCatching {
+        val ctx = App.ctx
+        val wifi = ctx.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+            ?: return null
+        @Suppress("DEPRECATION")
+        val info = wifi.connectionInfo ?: return null
+        if (info.ssid == "<unknown ssid>" && info.linkSpeed <= 0) return null
+        val ssid = info.ssid.removeSurrounding("\"")
+        // rssi → 百分比（-50≈100%，-100≈0%，与桌面同口径）
+        val pct = ((2.0 * (info.rssi + 100)).toInt()).coerceIn(0, 100)
+        Triple(if (ssid.isBlank()) "WiFi" else ssid, info.linkSpeed, pct)
     }.getOrNull()
 
     /** 网关 ping 链路质量：平均延迟 ms / 丢包%（用系统 ping） */

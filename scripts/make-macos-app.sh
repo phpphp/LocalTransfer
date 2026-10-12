@@ -45,4 +45,12 @@ cat > "$APP/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-echo "已生成 dist/LocalTransfer.app（首次运行如被 Gatekeeper 拦截：右键→打开）"
+# dmg 装载后展示 /Applications 快捷方式（拖拽安装的标准布局）
+if [ -d dist/LocalTransfer.app ]; then
+  rm -rf dist/.dmg-stage
+  mkdir -p dist/.dmg-stage
+  cp -R dist/LocalTransfer.app dist/.dmg-stage/
+  ln -s /Applications dist/.dmg-stage/Applications
+  echo "已生成 dist/LocalTransfer.app（首次运行如被 Gatekeeper 拦截：右键→打开）"
+  echo "dmg 布局就绪（.dmg-stage：app + /Applications 快捷方式）"
+fi
